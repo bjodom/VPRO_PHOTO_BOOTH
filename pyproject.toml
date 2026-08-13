@@ -1,0 +1,33 @@
+[project]
+name = "vpro"
+version = "0.1.0"
+description = "Backend-switchable inference scaffold for PyTorch and OpenVINO"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+	"openvino>=2026.3,<2026.4",
+	"opencv-python>=4.10",
+	"ultralytics>=8.3.0",
+]
+
+[project.optional-dependencies]
+torch = [
+	"torch>=2.4",
+]
+gen = [
+	"optimum[openvino]>=1.23.0",
+	"diffusers>=0.30.0",
+	"accelerate>=0.33.0",
+	"pillow>=10.0.0",
+	"transformers>=4.39.1,<5.0",
+]
+
+[project.scripts]
+vpro = "vpro.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+default-groups = []
