@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 
@@ -29,6 +30,7 @@ def load_juggernaut_pipeline(
     model_id: str,
     device: str = "AUTO",
     local_files_only: bool = True,
+    openvino_cache_dir: Path | None = None,
 ) -> Any:
     try:
         from optimum.intel import OVDiffusionPipeline
@@ -43,17 +45,45 @@ def load_juggernaut_pipeline(
     if candidate.exists():
         source = str(candidate.resolve())
 
+    ov_config: dict[str, str] = {}
+    if openvino_cache_dir is not None:
+        cache_dir = openvino_cache_dir.expanduser().resolve()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        ov_config["CACHE_DIR"] = str(cache_dir)
+
+    print(
+        f"Loading and compiling OpenVINO pipeline components on {device}; "
+        "this can take several minutes on first use.",
+        flush=True,
+    )
+    if ov_config:
+        print(f"OpenVINO compiled-model cache: {ov_config['CACHE_DIR']}", flush=True)
+    load_start = perf_counter()
     pipeline = OVDiffusionPipeline.from_pretrained(
         source,
         local_files_only=local_files_only,
         export=False,
+        device=device,
+        ov_config=ov_config,
+        compile=False,
     )
-    if hasattr(pipeline, "to"):
-        try:
-            pipeline.to(device)
-        except Exception:
-            # Some pipeline versions ignore or reject device mapping here.
-            pass
+    print(f"OpenVINO pipeline metadata loaded in {perf_counter() - load_start:.2f}s.", flush=True)
+
+    components = getattr(pipeline, "components", {})
+    for component_name, component in components.items():
+        compile_method = getattr(component, "compile", None)
+        if not callable(compile_method):
+            continue
+        print(f"Compiling OpenVINO component on {device}: {component_name}", flush=True)
+        component_start = perf_counter()
+        compile_method()
+        print(
+            f"OpenVINO component ready: {component_name} "
+            f"({perf_counter() - component_start:.2f}s)",
+            flush=True,
+        )
+
+    print(f"OpenVINO pipeline components ready in {perf_counter() - load_start:.2f}s.", flush=True)
     return pipeline
 
 

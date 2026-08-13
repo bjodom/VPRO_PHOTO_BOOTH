@@ -3,9 +3,36 @@
 Focused on prompt and quality-setting iteration: no captured/guide image is used.
 Every run appends its settings to a log file so runs can be compared later.
 
+Presets:
+    preset    steps  cfg
+    fast       16     3.5
+    balanced   24     4.5
+    quality    36     5.5
+    stylized   30     6.0
+
+CFG (classifier-free guidance) controls prompt adherence: lower values allow
+more variation; higher values follow the prompt more strictly but can look harsher.
+
+The default preset is balanced.  So if you want an apples to apples comparison, choose a 
+scene, a preset, and a seed, and then run the same command multiple times.  The output images
+will be identical if the seed is the same, and will vary if the seed is different. For example,
+python tests/juggernaut_test.py --scene fuji --preset quality --seed 1234.  Also if you don't
+specify a scene or prompt, the default scene is pyramids.  You can also specify a custom prompt with --prompt
+
 Example:
-    python tests/juggernaut_test.py --preset stylized --steps 32 --seed 1234
+    python tests/juggernaut_test.py --preset fast --seed 1234
+    python tests/juggernaut_test.py --preset balanced --seed 1234
+    python tests/juggernaut_test.py --preset quality --seed 1234
+    python tests/juggernaut_test.py --preset stylized --seed 1234
     python tests/juggernaut_test.py --scene pyramids --runs 3
+    python tests/juggernaut_test.py --scene eiffel --seed 1234
+    python tests/juggernaut_test.py --scene colosseum --seed 1234
+    python tests/juggernaut_test.py --scene tajmahal --seed 1234
+    python tests/juggernaut_test.py --scene machu --seed 1234
+    python tests/juggernaut_test.py --scene santorini --seed 1234
+    python tests/juggernaut_test.py --scene fuji --seed 1234
+    python tests/juggernaut_test.py --scene goldengate --seed 1234
+    python tests/juggernaut_test.py --no-local-only  # allow a first-time model download
 """
 
 from __future__ import annotations
@@ -65,7 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-id", default="OpenVINO/Juggernaut-XL-v9-fp16-ov")
     parser.add_argument("--device", default="GPU")
-    parser.add_argument("--local-only", action="store_true", help="Use cached/local model files only.")
+    parser.add_argument(
+        "--local-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use cached/local model files only (default); pass --no-local-only to allow downloads.",
+    )
     parser.add_argument("--scene", default=DEFAULT_SCENE, choices=sorted(SCENES), help="Built-in landmark scene.")
     parser.add_argument("--prompt", default=None, help="Full prompt override (bypasses --scene and style suffix).")
     parser.add_argument("--negative-prompt", default=DEFAULT_NEGATIVE_PROMPT)
@@ -78,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs", type=int, default=1, help="Number of renders in this invocation.")
     parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "outputs" / "juggernaut_prompt_tests")
     parser.add_argument("--log-file", type=Path, default=REPO_ROOT / "outputs" / "juggernaut_test_log.txt")
+    parser.add_argument(
+        "--openvino-cache-dir",
+        type=Path,
+        default=REPO_ROOT / "outputs" / "openvino_cache" / "juggernaut",
+        help="Persistent OpenVINO compiled-model cache directory.",
+    )
     return parser
 
 
@@ -131,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         model_id=args.model_id,
         device=args.device,
         local_files_only=args.local_only,
+        openvino_cache_dir=args.openvino_cache_dir,
     )
     load_sec = perf_counter() - load_start
     print(f"Pipeline ready in {load_sec:.2f}s")
@@ -164,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                 "model_id": args.model_id,
                 "device": args.device,
                 "local_only": args.local_only,
+                "openvino_cache_dir": str(args.openvino_cache_dir.expanduser().resolve()),
                 "scene": "custom" if args.prompt else args.scene,
                 "preset": args.preset,
                 "steps": steps,

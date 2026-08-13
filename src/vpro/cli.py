@@ -197,12 +197,18 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--juggernaut-device",
         default="GPU",
-        help="Device passed to OVDiffusionPipeline.to(...), when supported.",
+        help="OpenVINO device used to compile and run the Juggernaut pipeline.",
     )
     parser.add_argument(
         "--juggernaut-local-only",
         action="store_true",
         help="Use cache/local files only (no network download).",
+    )
+    parser.add_argument(
+        "--juggernaut-openvino-cache-dir",
+        type=Path,
+        default=Path("outputs/openvino_cache/juggernaut"),
+        help="Persistent OpenVINO compiled-model cache for Juggernaut.",
     )
     parser.add_argument(
         "--juggernaut-prompt",
@@ -711,6 +717,7 @@ def _run_juggernaut_tests(args) -> None:
         model_id=args.juggernaut_model_id,
         device=args.juggernaut_device,
         local_files_only=args.juggernaut_local_only,
+        openvino_cache_dir=args.juggernaut_openvino_cache_dir,
     )
 
     smoke_path = render_text2img(
@@ -880,6 +887,7 @@ def _run_social_pipeline(args) -> None:
                 model_id=args.juggernaut_model_id,
                 device=args.juggernaut_device,
                 local_files_only=args.juggernaut_local_only,
+                openvino_cache_dir=args.juggernaut_openvino_cache_dir,
             )
             guided_path = render_img2img(
                 pipeline=pipeline,
