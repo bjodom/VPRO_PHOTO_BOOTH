@@ -286,13 +286,16 @@ Now the dominant cost per guest, and the only lever that gets a session under ~4
 | 0 ✅ | Instrument startup/render; profile the load path | **Found and fixed a 20× startup regression (§10)** |
 | 0.5 ✅ | Fix `render_img2img` silently running text2img | **Correctness — plus guided render 20.2 s → 11.2 s** |
 | 1 ✅ | Detect black/non-finite renders and retry; reject black guide images | No black frame can reach a guest silently |
-| 2 | `JuggernautRunner` in-process worker + warmup render at boot | ~16 s off every guest after the first |
-| 3 | Attack the ~7.1 s fixed per-render cost (VAE, text encoders) | Now the largest non-step cost |
-| 4 | Step/scheduler/CFG tuning at fixed seed | ~1.01 s/step; matters less at strength 0.16 |
-| 5 | Decide img2img-guided vs. composite-on-generated-background | Gates speculative pre-render (§5.1) |
-| 6+ | Future ideas (§9) | Multi-process / multi-kiosk scale-out |
+| 2 ✅ | `JuggernautRunner` in-process worker + warmup render at boot | Startup paid once; guided render ~5–6 s steady state |
+| 3 ✅ | Wire the kiosk (`_run_social_pipeline`) to the runner; load during capture | Startup overlaps posing/compose |
+| 4 | Measure preload vs. live pose preview contention on real hardware | `--juggernaut-no-preload` exists as the escape hatch |
+| 5 | Attack the remaining fixed per-render cost | Now the largest slice of a ~5 s render |
+| 6 | Step/scheduler/CFG tuning at fixed seed | Diminishing returns at strength 0.16 |
+| 7 | Decide img2img-guided vs. composite-on-generated-background | Gates speculative pre-render (§5.1) |
+| 8+ | Future ideas (§9) | Multi-process / multi-kiosk scale-out |
 
-Current per-guest cost: **~16 s startup + ~11 s guided render ≈ 27 s**, down from ~400 s.
+Per-guest render cost is now **~5–6 s** once the booth is warm, against ~400 s at the start of this
+work. Startup (~29 s including warmup) is paid once at boot.
 
 ## 8. Open questions
 
@@ -550,6 +553,82 @@ Implemented in [src/vpro/vision/juggernaut_runtime.py](src/vpro/vision/juggernau
 **Still open:** the underlying cause. The guard converts a silent product failure into a retry plus
 a logged warning, but does not explain why the VAE occasionally emits a black frame. Worth
 revisiting if the retry rate turns out to be high during an event.
+
+### Phase 2 result: the persistent runner (implemented)
+
+`JuggernautRunner` in [src/vpro/vision/juggernaut_runner.py](src/vpro/vision/juggernaut_runner.py)
+holds one compiled pipeline on a daemon thread and serves requests from a bounded queue.
+Request/result types are in
+[src/vpro/vision/juggernaut_types.py](src/vpro/vision/juggernaut_types.py). Lifecycle and
+concurrency are covered by [tests/juggernaut_runner_test.py](tests/juggernaut_runner_test.py)
+(26 checks, stubbed pipeline, ~1 s, no GPU).
+
+Measured with `scripts/probe_load_phases.py --mode runner`:
+
+| Task | Startup (once) | Render 1 | Render 2 | Render 3 |
+| --- | ---: | ---: | ---: | ---: |
+| text2img, 16 steps | 23.2 s | 18.19 s | 17.21 s | 17.99 s |
+| img2img, 28 steps, strength 0.16 | 29.2 s | 5.72 s | 4.83 s | 6.15 s |
+
+Three guided renders complete in 45.9 s wall including startup; without the runner the same three
+would each pay startup again.
+
+### The warmup must run at production resolution
+
+The first version warmed up at 512×512. It barely helped: the first 1080×1350 guided render took
+**10.81 s** against 4.97 s for the second. Warming at the real output size moved that cost into
+boot — the first render dropped to **5.72 s**, in line with every render after it.
+
+This also explains a distortion in every earlier standalone measurement in this document: each
+fresh process paid a ~5–6 s first-render penalty that was being attributed to render cost. The
+steady-state guided render is **~5–6 s**, not the ~11–12 s measured standalone.
+
+### Design notes
+
+- **Serialized by construction.** One worker thread drains the queue; a test asserts renders never
+  overlap and FIFO order holds.
+- **Submissions before ready are queued, not rejected**, so the kiosk can enqueue during boot.
+  `queue_wait_seconds` is reported separately from `render_seconds`.
+- **A render failure never kills the worker.** It returns `RenderResult(ok=False, error=...)` and
+  the next request proceeds; verified by test.
+- **Load failure is surfaced, not hung.** `wait_until_ready` raises, queued futures resolve with
+  the error, and further submits are rejected. A silently dead worker would hang the UI forever,
+  which is the worst possible outcome.
+- **Full queue rejects fast** rather than growing without bound.
+- **Cancelled futures are skipped** via `set_running_or_notify_cancel`, so a guest who walks away
+  does not block the queue. This does not abort an already-running render; true mid-diffusion
+  cancellation still needs a `callback_on_step_end` hook.
+- **Requests are validated at the boundary** (`RenderRequest.validated`): step, dimension and
+  prompt-length caps prevent a bad UI value from wedging the booth.
+- **A failed warmup is logged and ignored** rather than preventing service.
+- **One runner owns one task.** Supporting both text2img and img2img in a single runner would mean
+  two compiled pipelines; construct two runners if both are needed.
+
+### Kiosk wiring: load during capture, not after it
+
+`_run_social_pipeline` now starts the runner **before** the camera work and submits the render
+after compose, so the ~29 s load overlaps the guest posing, the countdown, RMBG and compositing
+instead of following them.
+
+End-to-end with the vision stages stubbed (6 s capture, 2 s RMBG, 2 s compose):
+
+```
+Juggernaut pipeline loading in the background during capture.
+Juggernaut guided render: 5.79s (waited 18.00s for the pipeline)
+timings: capture=6.00, rmbg=2.00, compose=2.00, juggernaut=23.81, total=33.83
+```
+
+The 10 s of vision work came free. With a realistic capture flow — countdown plus wrist-stable
+detection — the overlap is larger, and in a persistent kiosk the load is already finished before
+the first guest arrives.
+
+`--juggernaut-no-preload` defers loading until after capture. Worth knowing: preloading shares the
+GPU with the live YOLO pose preview, so if the preview stutters during compile, that flag is the
+lever. This has not yet been measured on real hardware with the camera running.
+
+The failure path was verified too: a black guide image raises inside the worker, the result comes
+back `ok=False`, and the pipeline falls back to the deterministic compose rather than delivering a
+bad frame.
 
 ### Correction: the earlier "19 s fixed overhead" figure was wrong
 

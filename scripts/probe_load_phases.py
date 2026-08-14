@@ -41,11 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["core", "pipeline", "img2img"],
+        choices=["core", "pipeline", "img2img", "runner"],
         default="core",
         help=(
             "core: time raw OpenVINO calls. pipeline: cProfile the full optimum load. "
-            "img2img: time the guided render used by the real social pipeline."
+            "img2img: time the guided render used by the real social pipeline. "
+            "runner: prove the persistent worker pays startup only once."
         ),
     )
     parser.add_argument("--top", type=int, default=35, help="Rows of profile output to show.")
@@ -64,7 +65,75 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="cProfile the final render to split fixed overhead from denoising.",
     )
+    parser.add_argument("--task", choices=["text2img", "img2img"], default="text2img")
+    parser.add_argument("--no-warmup", action="store_true", help="Skip the runner warmup render.")
     return parser
+
+
+def probe_runner(args: argparse.Namespace) -> int:
+    """Show that only the first guest pays startup when the pipeline stays resident."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    from vpro.vision.juggernaut_runner import JuggernautRunner
+    from vpro.vision.juggernaut_types import RenderRequest
+
+    out_dir = REPO_ROOT / "outputs" / "runner_probe"
+    guide = args.guide_image
+    if args.task == "img2img" and guide is None:
+        candidates = sorted((REPO_ROOT / "outputs" / "juggernaut_prompt_tests").glob("*.jpg"))
+        if not candidates:
+            raise SystemExit("No guide image found; pass --guide-image.")
+        guide = candidates[-1]
+
+    wall_start = perf_counter()
+    runner = JuggernautRunner(
+        device=args.device,
+        openvino_cache_dir=args.cache_dir,
+        task=args.task,
+        warmup=not args.no_warmup,
+    ).start()
+
+    print("runner starting; submitting requests immediately (they queue during load)")
+    requests = [
+        RenderRequest(
+            mode=args.task,
+            prompt="the Great Pyramids of Giza at golden hour, photorealistic travel photograph",
+            negative_prompt="cartoon, blurry, deformed",
+            output_path=out_dir / f"runner_{index + 1}.jpg",
+            steps=args.steps,
+            guidance_scale=args.guidance_scale,
+            width=1080,
+            height=1350,
+            seed=1234 + index,
+            strength=args.strength if args.task == "img2img" else None,
+            input_image_path=guide if args.task == "img2img" else None,
+        )
+        for index in range(args.runs)
+    ]
+    futures = [runner.submit(request) for request in requests]
+
+    print(f"{len(futures)} requests queued at {perf_counter() - wall_start:.2f}s\n")
+    for index, future in enumerate(futures, start=1):
+        result = future.result()
+        if not result.ok:
+            print(f"render {index}: FAILED {result.error}")
+            continue
+        print(
+            f"render {index}: {result.render_seconds:6.2f}s render, "
+            f"{result.queue_wait_seconds:6.2f}s queued, done at "
+            f"{perf_counter() - wall_start:6.2f}s wall"
+        )
+
+    status = runner.status()
+    print(
+        f"\nstartup paid once: {status.startup_seconds:.2f}s "
+        f"(includes warmup={not args.no_warmup})"
+    )
+    print(f"served={status.renders_served} failures={status.failures} state={status.state}")
+    print(f"total wall time for {args.runs} renders: {perf_counter() - wall_start:.2f}s")
+    runner.shutdown()
+    return 0
 
 
 def _print_profile(profiler: object, top: int) -> None:
@@ -183,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
         return probe_pipeline(args)
     if args.mode == "img2img":
         return probe_img2img(args)
+    if args.mode == "runner":
+        return probe_runner(args)
 
     model_xml = args.snapshot_dir / args.component / "openvino_model.xml"
     if not model_xml.exists():
