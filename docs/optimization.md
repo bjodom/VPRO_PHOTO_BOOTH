@@ -188,6 +188,51 @@ released, so the warmup overlaps RMBG and compose instead.
 **Result:** preview holds **29–30 fps** throughout; p95 rises 17 → 22 ms with a single 52.8 ms
 frame, against a 33 ms camera budget. Not perceptible.
 
+### 2.7 NPU offload — works, but does not decouple on an integrated GPU
+
+**Hypothesis.** OpenVINO lets you pick the device, so moving the vision models to the NPU should
+free the GPU for diffusion and remove the §2.6 contention entirely.
+
+**Evidence.** This machine exposes three devices:
+
+```
+CPU | Intel(R) Core(TM) Ultra X7 358H
+GPU | Intel(R) Arc(TM) B390 GPU (iGPU)
+NPU | Intel(R) AI Boost
+```
+
+YOLO26 pose runs on the NPU without changes, and RMBG validates on it too:
+
+| Model | GPU | NPU |
+| --- | ---: | ---: |
+| YOLO26 pose, p50 | 15.9 ms (~63 fps) | 26.0 ms (~38 fps) |
+| YOLO26 pose, p95 | 16.7 ms | 28.3 ms |
+| Preview delivered | 29–30 fps | 29–30 fps |
+
+The NPU is ~1.6× slower per frame but still inside the 33 ms camera budget, so the delivered
+preview is identical.
+
+**But it does not remove the contention.** Re-running the §2.6 test with YOLO on the NPU and the
+warmup render on the GPU:
+
+| Configuration | During warmup | p95 | worst frame |
+| --- | --- | ---: | ---: |
+| YOLO on GPU | 8–20 fps | 46.6 ms | 579.7 ms |
+| YOLO on NPU | 12–30 fps | 52.2 ms | 522.2 ms |
+
+**Root cause.** The GPU here is *integrated* — OpenVINO reports `Arc B390 (iGPU)`, so its "VRAM" is
+shared system memory. A heavy SDXL render saturates memory bandwidth shared by CPU, iGPU and NPU,
+so moving the model to a different compute unit does not help; the bottleneck is not the compute
+unit. Frame capture, preprocessing and `result.plot()` also remain on the CPU.
+
+**Expectation for the booth.** The target is a **discrete** Arc B70 with dedicated 32 GB VRAM.
+There the diffusion workload has its own memory bandwidth, so NPU offload should decouple far more
+cleanly — and even GPU-only contention should be milder. **Untested; re-run
+`tests/gpu_contention_test.py` there.**
+
+**Result.** `--npu` added, defaulting off. Deferred warmup (§2.6) remains the primary protection
+because it works regardless of device topology; NPU offload is complementary, not a replacement.
+
 ---
 
 ## 3. What was built
@@ -199,6 +244,7 @@ frame, against a 33 ms camera budget. Not perceptible.
 | Correctness | `_is_degenerate_image` / `_render_with_black_guard`; black guide rejection |
 | Throughput | `JuggernautRunner` — resident pipeline on a worker thread |
 | Kiosk | Load during capture; warmup deferred until the camera is released |
+| Kiosk | `--npu` routes YOLO pose and RMBG to the NPU; Juggernaut stays on the GPU |
 | Tooling | Startup/render instrumentation, JSONL metrics, probe modes, brightness scan |
 
 ### 3.1 JuggernautRunner
@@ -250,6 +296,11 @@ capture=6.00 rmbg=2.00 compose=2.00 juggernaut=23.81 total=33.83
 
 `--juggernaut-no-preload` defers loading until after capture if it is ever needed.
 
+`--npu` moves the vision models off the GPU. It only overrides devices still at their defaults, so
+explicit `--device` / `--rmbg-device` values win, and it fails fast with the available device list
+if no NPU is present. Juggernaut is deliberately left on the GPU — SDXL is not a practical NPU
+workload.
+
 Failure path verified: a black guide raises inside the worker, the result returns `ok=False`, and
 the deterministic compose is delivered instead.
 
@@ -280,6 +331,9 @@ Ordered by expected value given the current cost model.
    suffix and constant negative prompt; embeddings could be computed once at warmup.
 3. **Check other paths for the §2.1 stall.** RMBG, YOLO26 and Twilio delivery may have the same
    invisible 14 s connect timeouts.
+4. **Re-measure contention on the discrete Arc B70.** §2.7 predicts NPU offload decouples properly
+   with dedicated VRAM; if so, the warmup could move back into the capture window and shave a few
+   more seconds off the first guest.
 4. **Decide img2img-guided vs. composite-on-generated-background.** Gates item 6 — the difference
    between hiding ~40 s of latency and not.
 5. **Progressive preview.** A step callback decoding a cheap preview so the guest sees the image
