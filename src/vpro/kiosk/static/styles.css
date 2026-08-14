@@ -1,0 +1,151 @@
+:root {
+  --bg: #070a12;
+  --panel: #121826;
+  --ink: #f2f5fb;
+  --muted: #93a0bb;
+  --accent: #2f6fed;
+  --accent-ink: #ffffff;
+  --danger: #e05252;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Kiosk feel: no zoom, no text selection, no rubber-banding. */
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: none;
+  overflow: hidden;
+}
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px;
+  background: var(--panel);
+  border-bottom: 1px solid #1e2637;
+}
+.brand { font-weight: 600; letter-spacing: .2px; }
+.spacer { flex: 1; }
+.timer { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 14px; }
+
+#screens { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
+
+.screen {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  text-align: center;
+  width: 100%;
+  max-width: 1000px;
+}
+.screen.active { display: flex; }
+
+h1 { font-size: clamp(32px, 5vw, 56px); line-height: 1.1; margin: 0; }
+h2 { font-size: clamp(24px, 3.4vw, 38px); margin: 0; }
+.lede { font-size: clamp(16px, 1.8vw, 21px); color: var(--ink); margin: 0; }
+.muted { color: var(--muted); font-size: 15px; margin: 0; word-break: break-all; }
+
+button {
+  font: inherit;
+  border: 0;
+  border-radius: 12px;
+  padding: 16px 26px;
+  cursor: pointer;
+  min-height: 56px;
+  min-width: 120px;
+}
+button:disabled { opacity: .45; cursor: default; }
+.primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.primary.xl { font-size: 22px; padding: 22px 42px; }
+.ghost { background: #1b2333; color: var(--ink); }
+.row { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+
+.consent { text-align: left; max-width: 620px; line-height: 1.7; color: var(--ink); }
+.check { display: flex; gap: 12px; align-items: center; font-size: 18px; }
+.check input { width: 26px; height: 26px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+  width: 100%;
+}
+.scene {
+  background: var(--panel);
+  border: 1px solid #223049;
+  border-radius: 14px;
+  padding: 20px 16px;
+  text-align: left;
+  min-height: 104px;
+}
+.scene b { display: block; font-size: 19px; margin-bottom: 6px; }
+.scene span { color: var(--muted); font-size: 14px; line-height: 1.4; }
+
+.preview {
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  max-height: 58vh;
+  display: flex;
+}
+.preview img { max-width: 100%; max-height: 58vh; object-fit: contain; display: block; }
+
+.ready-layout {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 100%;
+}
+/* The photo is the payoff; the QR is a means to an end, so let the image dominate. */
+.ready-layout .preview { flex: 1 1 420px; max-height: 66vh; }
+.ready-layout .preview img { max-height: 66vh; }
+.handoff { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 260px; }
+.qr { background: #fff; padding: 10px; border-radius: 12px; line-height: 0; }
+.qr svg { width: 190px; height: 190px; display: block; }
+.handoff .lede { font-size: 17px; }
+.caption {
+  background: var(--panel);
+  padding: 12px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  text-align: left;
+  font-size: 13px;
+  user-select: text;
+  max-width: 250px;
+}
+
+.spinner {
+  width: 64px; height: 64px;
+  border: 6px solid #223049;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.screen.error h2 { color: var(--danger); }
+
+#staff-panel {
+  position: fixed;
+  inset: auto 16px 16px auto;
+  background: var(--panel);
+  border: 1px solid #223049;
+  border-radius: 14px;
+  padding: 18px;
+  max-width: 420px;
+}
+#staff-panel pre { color: var(--muted); font-size: 13px; white-space: pre-wrap; user-select: text; }

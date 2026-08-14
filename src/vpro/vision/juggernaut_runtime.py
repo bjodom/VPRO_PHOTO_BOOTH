@@ -40,6 +40,7 @@ def _aligned_dim(value: int) -> int:
 
 TASK_TEXT2IMG = "text2img"
 TASK_IMG2IMG = "img2img"
+TASK_INPAINT = "inpaint"
 
 # SDXL fp16 VAE overflow yields all-black frames on some seeds; a real render never lands this low.
 BLACK_FRAME_MAX_LUMA = 8
@@ -105,7 +106,14 @@ def _render_with_black_guard(
 def _require_task(pipeline: Any, task: str) -> None:
     """Guard against a text2img pipeline silently ignoring `image`/`strength` kwargs."""
     name = type(pipeline).__name__
+    is_inpaint = "Inpaint" in name
     is_img2img = "Img2Img" in name
+
+    if task == TASK_INPAINT and not is_inpaint:
+        raise RuntimeError(
+            f"render_inpaint requires an inpainting pipeline, got {name}. "
+            f"Load it with load_juggernaut_pipeline(..., task='{TASK_INPAINT}')."
+        )
     if task == TASK_IMG2IMG and not is_img2img:
         raise RuntimeError(
             f"render_img2img requires an image-to-image pipeline, got {name}. "
@@ -113,7 +121,7 @@ def _require_task(pipeline: Any, task: str) -> None:
             "A text2img pipeline accepts and discards 'image' and 'strength', producing output "
             "that ignores the guide image entirely."
         )
-    if task == TASK_TEXT2IMG and is_img2img:
+    if task == TASK_TEXT2IMG and (is_img2img or is_inpaint):
         raise RuntimeError(
             f"render_text2img requires a text-to-image pipeline, got {name}. "
             f"Load it with load_juggernaut_pipeline(..., task='{TASK_TEXT2IMG}')."
@@ -129,21 +137,29 @@ def load_juggernaut_pipeline(
     task: str = TASK_TEXT2IMG,
 ) -> Any:
     """Load and compile the pipeline; `timings`, if given, is filled with per-phase seconds."""
-    if task not in (TASK_TEXT2IMG, TASK_IMG2IMG):
-        raise ValueError(f"task must be '{TASK_TEXT2IMG}' or '{TASK_IMG2IMG}', got {task!r}")
+    if task not in (TASK_TEXT2IMG, TASK_IMG2IMG, TASK_INPAINT):
+        raise ValueError(
+            f"task must be one of '{TASK_TEXT2IMG}', '{TASK_IMG2IMG}', '{TASK_INPAINT}', got {task!r}"
+        )
     _configure_offline_defaults(local_files_only)
 
     import_start = perf_counter()
     try:
-        from optimum.intel import OVPipelineForImage2Image, OVPipelineForText2Image
+        from optimum.intel import (
+            OVPipelineForImage2Image,
+            OVPipelineForInpainting,
+            OVPipelineForText2Image,
+        )
     except Exception as exc:
         raise RuntimeError(
             "Juggernaut runtime requires optimum[openvino]. "
             "Install with: pip install \"optimum[openvino]\""
         ) from exc
-    pipeline_class = (
-        OVPipelineForImage2Image if task == TASK_IMG2IMG else OVPipelineForText2Image
-    )
+    pipeline_class = {
+        TASK_TEXT2IMG: OVPipelineForText2Image,
+        TASK_IMG2IMG: OVPipelineForImage2Image,
+        TASK_INPAINT: OVPipelineForInpainting,
+    }[task]
     import_sec = perf_counter() - import_start
     if timings is not None:
         timings["optimum_import_seconds"] = import_sec
@@ -310,6 +326,98 @@ def render_img2img(
         kwargs["negative_prompt"] = negative_prompt
 
     image = _render_with_black_guard(pipeline, kwargs, seed, "img2img", attempts)
+    if image.size != (requested_w, requested_h):
+        image = image.resize((requested_w, requested_h), Image.Resampling.LANCZOS)
+    image.save(output_path)
+    return output_path
+
+
+def feather_mask(mask: Any, feather_px: int = 12, expand_px: int = 0) -> Any:
+    """Soften a hard subject mask so the model can blend the silhouette.
+
+    A binary cut-out leaves a sticker edge; a gradient lets the denoiser resolve the boundary.
+    `expand_px` dilates when positive and erodes when negative. Eroding matters because a matted
+    subject's semi-transparent edge pixels carry the colour of whatever it was composited over,
+    and locking that contamination produces a halo.
+    """
+    import cv2
+    import numpy as np
+
+    work = np.asarray(mask, dtype=np.uint8)
+    if expand_px:
+        size = abs(expand_px) * 2 + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+        work = cv2.dilate(work, kernel) if expand_px > 0 else cv2.erode(work, kernel)
+    if feather_px > 0:
+        radius = feather_px * 2 + 1
+        work = cv2.GaussianBlur(work, (radius, radius), 0)
+    return work
+
+
+def render_inpaint(
+    pipeline: Any,
+    input_image_path: Path,
+    mask_image_path: Path,
+    output_path: Path,
+    prompt: str,
+    negative_prompt: str | None,
+    steps: int,
+    guidance_scale: float,
+    strength: float,
+    width: int,
+    height: int,
+    seed: int | None,
+    attempts: int = DEFAULT_RENDER_ATTEMPTS,
+) -> Path:
+    """Generate everything the mask marks white, preserving the black region.
+
+    The mask convention is diffusers': white is repainted. The kiosk passes the inverse of the
+    subject coverage, so the guest is preserved and the scene around them is generated.
+    """
+    try:
+        from PIL import Image
+    except Exception as exc:
+        raise RuntimeError(
+            "Juggernaut inpainting requires Pillow. Install with: pip install pillow"
+        ) from exc
+
+    _require_task(pipeline, TASK_INPAINT)
+
+    input_image_path = input_image_path.expanduser().resolve()
+    mask_image_path = mask_image_path.expanduser().resolve()
+    for label, path in (("guide", input_image_path), ("mask", mask_image_path)):
+        if not path.exists():
+            raise RuntimeError(f"Juggernaut inpaint {label} image not found: {path}")
+
+    output_path = _resolve_path(output_path)
+
+    requested_w = int(width)
+    requested_h = int(height)
+    model_w = _aligned_dim(requested_w)
+    model_h = _aligned_dim(requested_h)
+
+    guide_image = Image.open(input_image_path).convert("RGB")
+    guide_image = guide_image.resize((model_w, model_h), Image.Resampling.LANCZOS)
+    if _is_degenerate_image(guide_image):
+        raise RuntimeError(f"Juggernaut inpaint guide image is black: {input_image_path}")
+
+    mask_image = Image.open(mask_image_path).convert("L")
+    mask_image = mask_image.resize((model_w, model_h), Image.Resampling.LANCZOS)
+
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "image": guide_image,
+        "mask_image": mask_image,
+        "num_inference_steps": int(steps),
+        "guidance_scale": float(guidance_scale),
+        "strength": float(strength),
+        "width": model_w,
+        "height": model_h,
+    }
+    if negative_prompt:
+        kwargs["negative_prompt"] = negative_prompt
+
+    image = _render_with_black_guard(pipeline, kwargs, seed, "inpaint", attempts)
     if image.size != (requested_w, requested_h):
         image = image.resize((requested_w, requested_h), Image.Resampling.LANCZOS)
     image.save(output_path)

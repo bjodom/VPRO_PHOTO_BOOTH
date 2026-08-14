@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>vPRO Travel Photo Experience</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="bar">
+    <span class="brand">vPRO Travel Photo Experience</span>
+    <span class="spacer"></span>
+    <span id="timer" class="timer"></span>
+    <button id="staff" class="ghost" type="button">Staff</button>
+  </header>
+
+  <main id="screens">
+
+    <section class="screen" data-state="idle">
+      <h1>Put yourself anywhere.<br>Hold a vPro laptop.</h1>
+      <p class="lede">About a minute. Scan a QR code to take it with you.</p>
+      <button class="primary xl" data-action="start">Start Your Photo Experience</button>
+    </section>
+
+    <section class="screen" data-state="consent">
+      <h2>Before we start</h2>
+      <ul class="consent">
+        <li>We capture your photo to generate your personalized image.</li>
+        <li>All image processing runs locally on this kiosk.</li>
+        <li>We do not ask for your phone number, email, or any personal details.</li>
+        <li>You download your image by scanning a QR code. The link expires in 15 minutes.</li>
+      </ul>
+      <label class="check">
+        <input type="checkbox" id="consent-box">
+        <span>I agree to photo capture and image generation.</span>
+      </label>
+      <div class="row">
+        <button class="ghost" data-action="reset">Cancel</button>
+        <button class="primary" id="consent-continue" data-action="accept_consent" disabled>
+          Accept &amp; Continue
+        </button>
+      </div>
+    </section>
+
+    <section class="screen" data-state="select_scene">
+      <h2>Choose your destination</h2>
+      <div id="scene-grid" class="grid"></div>
+    </section>
+
+    <section class="screen" data-state="pose">
+      <h2>Strike a pose</h2>
+      <p class="lede">Hold one hand up so we can place the laptop.</p>
+      <div class="preview"><img id="preview-pose" alt="Camera preview"></div>
+      <div class="row">
+        <button class="ghost" data-action="choose_another_scene">Change scene</button>
+        <button class="primary xl" id="capture-btn" data-action="capture">Take Photo</button>
+      </div>
+    </section>
+
+    <section class="screen" data-state="review">
+      <h2>Looks good?</h2>
+      <div class="preview"><img id="review-img" alt="Captured photo"></div>
+      <div class="row">
+        <button class="ghost" data-action="retake">Retake</button>
+        <button class="primary" data-action="accept_capture">Use This Photo</button>
+      </div>
+    </section>
+
+    <section class="screen" data-state="generating">
+      <h2>Creating your image</h2>
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="lede">Running the local AI pipeline: pose, extraction, composite, restyle.</p>
+      <p class="muted">Everything happens on this machine.</p>
+    </section>
+
+    <section class="screen" data-state="ready">
+      <h2>Your photo is ready</h2>
+      <div class="ready-layout">
+        <div class="preview"><img id="final-img" alt="Your generated photo"></div>
+        <div class="handoff">
+          <div id="qr" class="qr"></div>
+          <p class="lede">Scan to download to your phone.</p>
+          <p class="muted" id="ready-url"></p>
+          <button class="ghost" id="caption-btn" type="button">Show caption</button>
+          <pre id="caption" class="caption" hidden></pre>
+        </div>
+      </div>
+      <button class="primary" data-action="finish">I'm Done</button>
+    </section>
+
+    <section class="screen" data-state="done">
+      <h2>All set!</h2>
+      <p class="lede">Thanks for trying the Intel vPro experience.</p>
+      <button class="primary" data-action="reset">Start Another</button>
+    </section>
+
+    <section class="screen error" data-state="camera_error">
+      <h2>Camera unavailable</h2>
+      <p class="lede" data-error></p>
+      <div class="row">
+        <button class="primary" data-action="retry">Retry Camera</button>
+        <button class="ghost" data-action="reset">Start Over</button>
+      </div>
+    </section>
+
+    <section class="screen error" data-state="generation_error">
+      <h2>We couldn't generate your image</h2>
+      <p class="lede" data-error></p>
+      <div class="row">
+        <button class="primary" data-action="retry">Try Again</button>
+        <button class="ghost" data-action="choose_another_scene">Another Scene</button>
+        <button class="ghost" data-action="reset">Start Over</button>
+      </div>
+    </section>
+
+    <section class="screen error" data-state="delivery_error">
+      <h2>We couldn't prepare your download</h2>
+      <p class="lede" data-error></p>
+      <p class="muted">Your photo is saved on the kiosk. Staff can help.</p>
+      <div class="row">
+        <button class="primary" data-action="retry">Retry</button>
+        <button class="ghost" data-action="reset">Start Over</button>
+      </div>
+    </section>
+
+  </main>
+
+  <aside id="staff-panel" hidden>
+    <h3>Staff</h3>
+    <pre id="staff-status"></pre>
+    <button class="ghost" data-action="reset">Force Reset</button>
+    <button class="ghost" id="staff-close" type="button">Close</button>
+  </aside>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
