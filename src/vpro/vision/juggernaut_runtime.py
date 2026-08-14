@@ -38,24 +38,52 @@ def _aligned_dim(value: int) -> int:
     return max(64, int(value) - (int(value) % 8))
 
 
+TASK_TEXT2IMG = "text2img"
+TASK_IMG2IMG = "img2img"
+
+
+def _require_task(pipeline: Any, task: str) -> None:
+    """Guard against a text2img pipeline silently ignoring `image`/`strength` kwargs."""
+    name = type(pipeline).__name__
+    is_img2img = "Img2Img" in name
+    if task == TASK_IMG2IMG and not is_img2img:
+        raise RuntimeError(
+            f"render_img2img requires an image-to-image pipeline, got {name}. "
+            f"Load it with load_juggernaut_pipeline(..., task='{TASK_IMG2IMG}'). "
+            "A text2img pipeline accepts and discards 'image' and 'strength', producing output "
+            "that ignores the guide image entirely."
+        )
+    if task == TASK_TEXT2IMG and is_img2img:
+        raise RuntimeError(
+            f"render_text2img requires a text-to-image pipeline, got {name}. "
+            f"Load it with load_juggernaut_pipeline(..., task='{TASK_TEXT2IMG}')."
+        )
+
+
 def load_juggernaut_pipeline(
     model_id: str,
     device: str = "AUTO",
     local_files_only: bool = True,
     openvino_cache_dir: Path | None = None,
     timings: dict[str, float] | None = None,
+    task: str = TASK_TEXT2IMG,
 ) -> Any:
     """Load and compile the pipeline; `timings`, if given, is filled with per-phase seconds."""
+    if task not in (TASK_TEXT2IMG, TASK_IMG2IMG):
+        raise ValueError(f"task must be '{TASK_TEXT2IMG}' or '{TASK_IMG2IMG}', got {task!r}")
     _configure_offline_defaults(local_files_only)
 
     import_start = perf_counter()
     try:
-        from optimum.intel import OVDiffusionPipeline
+        from optimum.intel import OVPipelineForImage2Image, OVPipelineForText2Image
     except Exception as exc:
         raise RuntimeError(
             "Juggernaut runtime requires optimum[openvino]. "
             "Install with: pip install \"optimum[openvino]\""
         ) from exc
+    pipeline_class = (
+        OVPipelineForImage2Image if task == TASK_IMG2IMG else OVPipelineForText2Image
+    )
     import_sec = perf_counter() - import_start
     if timings is not None:
         timings["optimum_import_seconds"] = import_sec
@@ -73,14 +101,14 @@ def load_juggernaut_pipeline(
         ov_config["CACHE_DIR"] = str(cache_dir)
 
     print(
-        f"Loading and compiling OpenVINO pipeline components on {device}; "
+        f"Loading and compiling OpenVINO pipeline components on {device} for task '{task}'; "
         "this can take several minutes on first use.",
         flush=True,
     )
     if ov_config:
         print(f"OpenVINO compiled-model cache: {ov_config['CACHE_DIR']}", flush=True)
     load_start = perf_counter()
-    pipeline = OVDiffusionPipeline.from_pretrained(
+    pipeline = pipeline_class.from_pretrained(
         source,
         local_files_only=local_files_only,
         export=False,
@@ -91,7 +119,11 @@ def load_juggernaut_pipeline(
     metadata_sec = perf_counter() - load_start
     if timings is not None:
         timings["metadata_seconds"] = metadata_sec
-    print(f"OpenVINO pipeline metadata loaded in {metadata_sec:.2f}s.", flush=True)
+    print(
+        f"OpenVINO pipeline metadata loaded in {metadata_sec:.2f}s "
+        f"({type(pipeline).__name__}).",
+        flush=True,
+    )
 
     components = getattr(pipeline, "components", {})
     compile_total = 0.0
@@ -139,6 +171,7 @@ def render_text2img(
             "Juggernaut text2img output processing requires Pillow. Install with: pip install pillow"
         ) from exc
 
+    _require_task(pipeline, TASK_TEXT2IMG)
     output_path = _resolve_path(output_path)
     generator = _make_generator(seed)
 
@@ -189,6 +222,8 @@ def render_img2img(
         raise RuntimeError(
             "Juggernaut img2img requires Pillow. Install with: pip install pillow"
         ) from exc
+
+    _require_task(pipeline, TASK_IMG2IMG)
 
     input_image_path = input_image_path.expanduser().resolve()
     if not input_image_path.exists():

@@ -718,6 +718,7 @@ def _run_juggernaut_tests(args) -> None:
         device=args.juggernaut_device,
         local_files_only=args.juggernaut_local_only,
         openvino_cache_dir=args.juggernaut_openvino_cache_dir,
+        task="text2img",
     )
 
     smoke_path = render_text2img(
@@ -744,8 +745,15 @@ def _run_juggernaut_tests(args) -> None:
         )
         return
 
+    guided_pipeline = load_juggernaut_pipeline(
+        model_id=args.juggernaut_model_id,
+        device=args.juggernaut_device,
+        local_files_only=args.juggernaut_local_only,
+        openvino_cache_dir=args.juggernaut_openvino_cache_dir,
+        task="img2img",
+    )
     guided_path = render_img2img(
-        pipeline=pipeline,
+        pipeline=guided_pipeline,
         input_image_path=guided_input,
         output_path=args.juggernaut_guided_output,
         prompt=args.juggernaut_prompt,
@@ -888,6 +896,7 @@ def _run_social_pipeline(args) -> None:
                 device=args.juggernaut_device,
                 local_files_only=args.juggernaut_local_only,
                 openvino_cache_dir=args.juggernaut_openvino_cache_dir,
+                task="img2img",
             )
             guided_path = render_img2img(
                 pipeline=pipeline,
