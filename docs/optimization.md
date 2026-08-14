@@ -285,7 +285,7 @@ Now the dominant cost per guest, and the only lever that gets a session under ~4
 | --- | --- | --- |
 | 0 ✅ | Instrument startup/render; profile the load path | **Found and fixed a 20× startup regression (§10)** |
 | 0.5 ✅ | Fix `render_img2img` silently running text2img | **Correctness — plus guided render 20.2 s → 11.2 s** |
-| 1 | Auto-detect black/NaN renders and re-roll the seed | Prevents delivering a black image to a guest |
+| 1 ✅ | Detect black/non-finite renders and retry; reject black guide images | No black frame can reach a guest silently |
 | 2 | `JuggernautRunner` in-process worker + warmup render at boot | ~16 s off every guest after the first |
 | 3 | Attack the ~7.1 s fixed per-render cost (VAE, text encoders) | Now the largest non-step cost |
 | 4 | Step/scheduler/CFG tuning at fixed seed | ~1.01 s/step; matters less at strength 0.16 |
@@ -522,21 +522,34 @@ Verified after the fix: the pipeline is `OVStableDiffusionXLImg2ImgPipeline`, `s
 Solving those two points gives the current cost model: **~7.1 s fixed per render, plus ~1.01 s per
 denoising step.** The fixed portion is VAE encode/decode, both text encoders, resize and save.
 
-### Open bug: intermittent all-black render
+### Black-render guard (fixed)
 
-`run0012` (text2img, `quality` preset, seed 1236) came out **entirely black** (`mean=0.00,
-max=0`), while runs 1–11 from the same code and session were fine (mean 80–162). This is a
-one-in-twelve intermittent failure, consistent with the known SDXL fp16 VAE overflow producing
-NaN/inf latents on particular seeds.
+`run0012` (text2img, `quality` preset, seed 1236) came out **entirely black** (`mean=0.00, max=0`),
+while runs 1–11 from the same session were fine (mean 80–162).
 
-It matters more than its frequency suggests: a black image delivered to a guest is a total product
-failure, and nothing in the pipeline currently detects it. `scripts/check_output_brightness.py`
-flags black and near-black outputs and should become an automatic post-render guard — cheap
-insurance, and it can trigger a re-render with a different seed.
+**The failure is transient, not seed-determined.** Re-running the identical command with the same
+seed 1236 and the same preset produced a correct image (`run0014`, mean 158.5). So the initial
+"fp16 VAE overflow on particular seeds" hypothesis is wrong — a fixed seed does not reproduce it.
+The cause is more likely transient GPU/driver state. Root cause remains unidentified.
 
-This also caused a confusing detour: the img2img probe auto-selects the newest render as its guide
-image, which was `run0012`, so the first "fixed" img2img runs looked black or dark. The fix was
-correct; the guide was not.
+That transience is what makes a guard practical: simply running again usually works.
+
+Implemented in [src/vpro/vision/juggernaut_runtime.py](src/vpro/vision/juggernaut_runtime.py):
+
+- `_is_degenerate_image` flags all-black (max luma < 8) or non-finite output.
+- `_render_with_black_guard` wraps both render paths, retrying up to `DEFAULT_RENDER_ATTEMPTS` (3).
+  Because the failure is transient, the first retry **reuses the same seed** to preserve
+  reproducibility; only later retries vary it.
+- After exhausting attempts it raises, so the social pipeline falls back to the deterministic
+  compose rather than delivering a black frame.
+- `render_img2img` also rejects a black *guide* image up front — otherwise a bad guide silently
+  yields a black result, which is exactly what confused the img2img diagnosis above.
+
+`scripts/check_output_brightness.py` remains for scanning existing outputs in bulk.
+
+**Still open:** the underlying cause. The guard converts a silent product failure into a retry plus
+a logged warning, but does not explain why the VAE occasionally emits a black frame. Worth
+revisiting if the retry rate turns out to be high during an event.
 
 ### Correction: the earlier "19 s fixed overhead" figure was wrong
 
