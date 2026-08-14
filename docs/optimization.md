@@ -287,11 +287,12 @@ Now the dominant cost per guest, and the only lever that gets a session under ~4
 | 0.5 ✅ | Fix `render_img2img` silently running text2img | **Correctness — plus guided render 20.2 s → 11.2 s** |
 | 1 ✅ | Detect black/non-finite renders and retry; reject black guide images | No black frame can reach a guest silently |
 | 2 ✅ | `JuggernautRunner` in-process worker + warmup render at boot | Startup paid once; guided render ~5–6 s steady state |
-| 3 | Wire the kiosk (`_run_social_pipeline`) to the runner | Delivers the win to real guests |
-| 4 | Attack the remaining fixed per-render cost | Now the largest slice of a ~5 s render |
-| 5 | Step/scheduler/CFG tuning at fixed seed | Diminishing returns at strength 0.16 |
-| 6 | Decide img2img-guided vs. composite-on-generated-background | Gates speculative pre-render (§5.1) |
-| 7+ | Future ideas (§9) | Multi-process / multi-kiosk scale-out |
+| 3 ✅ | Wire the kiosk (`_run_social_pipeline`) to the runner; load during capture | Startup overlaps posing/compose |
+| 4 | Measure preload vs. live pose preview contention on real hardware | `--juggernaut-no-preload` exists as the escape hatch |
+| 5 | Attack the remaining fixed per-render cost | Now the largest slice of a ~5 s render |
+| 6 | Step/scheduler/CFG tuning at fixed seed | Diminishing returns at strength 0.16 |
+| 7 | Decide img2img-guided vs. composite-on-generated-background | Gates speculative pre-render (§5.1) |
+| 8+ | Future ideas (§9) | Multi-process / multi-kiosk scale-out |
 
 Per-guest render cost is now **~5–6 s** once the booth is warm, against ~400 s at the start of this
 work. Startup (~29 s including warmup) is paid once at boot.
@@ -602,6 +603,32 @@ steady-state guided render is **~5–6 s**, not the ~11–12 s measured standalo
 - **A failed warmup is logged and ignored** rather than preventing service.
 - **One runner owns one task.** Supporting both text2img and img2img in a single runner would mean
   two compiled pipelines; construct two runners if both are needed.
+
+### Kiosk wiring: load during capture, not after it
+
+`_run_social_pipeline` now starts the runner **before** the camera work and submits the render
+after compose, so the ~29 s load overlaps the guest posing, the countdown, RMBG and compositing
+instead of following them.
+
+End-to-end with the vision stages stubbed (6 s capture, 2 s RMBG, 2 s compose):
+
+```
+Juggernaut pipeline loading in the background during capture.
+Juggernaut guided render: 5.79s (waited 18.00s for the pipeline)
+timings: capture=6.00, rmbg=2.00, compose=2.00, juggernaut=23.81, total=33.83
+```
+
+The 10 s of vision work came free. With a realistic capture flow — countdown plus wrist-stable
+detection — the overlap is larger, and in a persistent kiosk the load is already finished before
+the first guest arrives.
+
+`--juggernaut-no-preload` defers loading until after capture. Worth knowing: preloading shares the
+GPU with the live YOLO pose preview, so if the preview stutters during compile, that flag is the
+lever. This has not yet been measured on real hardware with the camera running.
+
+The failure path was verified too: a black guide image raises inside the worker, the result comes
+back `ok=False`, and the pipeline falls back to the deterministic compose rather than delivering a
+bad frame.
 
 ### Correction: the earlier "19 s fixed overhead" figure was wrong
 

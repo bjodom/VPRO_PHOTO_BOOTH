@@ -285,6 +285,14 @@ def build_parser() -> ArgumentParser:
         action="store_true",
         help="Skip image-guided Juggernaut test even if guide image exists.",
     )
+    parser.add_argument(
+        "--juggernaut-no-preload",
+        action="store_true",
+        help=(
+            "Load Juggernaut after capture instead of during it. Preloading hides ~29s of startup "
+            "behind the capture flow but shares the GPU with the live pose preview."
+        ),
+    )
     return parser
 
 
@@ -801,10 +809,8 @@ def _validate_juggernaut_dimensions_and_strength(
 
 
 def _run_social_pipeline(args) -> None:
-    from .vision.juggernaut_runtime import (
-        load_juggernaut_pipeline,
-        render_img2img,
-    )
+    from .vision.juggernaut_runner import JuggernautRunner
+    from .vision.juggernaut_types import RenderRequest
 
     preset_map = {
         "identity-lock": {"steps": 28, "guidance_scale": 4.2, "guided_strength": 0.16},
@@ -821,6 +827,21 @@ def _run_social_pipeline(args) -> None:
     )
 
     t_total = perf_counter()
+
+    # Loading takes ~29s, so start it before the camera work and let it overlap posing and compose.
+    runner: JuggernautRunner | None = None
+    if not args.juggernaut_skip_guided and not args.juggernaut_no_preload:
+        runner = JuggernautRunner(
+            model_id=args.juggernaut_model_id,
+            device=args.juggernaut_device,
+            local_files_only=args.juggernaut_local_only,
+            openvino_cache_dir=args.juggernaut_openvino_cache_dir,
+            task="img2img",
+            warmup_width=args.juggernaut_width,
+            warmup_height=args.juggernaut_height,
+        ).start()
+        print("Juggernaut pipeline loading in the background during capture.")
+
     backend = build_backend(args.backend)
     backend.load_model(args.model_path)
 
@@ -882,36 +903,43 @@ def _run_social_pipeline(args) -> None:
         t_juggernaut = perf_counter()
         try:
             print(
-                "Loading Juggernaut pipeline: "
-                f"{args.juggernaut_model_id} (device={args.juggernaut_device}, "
-                f"local_only={args.juggernaut_local_only})"
-            )
-            print(
                 "Juggernaut preset: "
                 f"{args.juggernaut_preset} "
                 f"(steps={steps}, guidance={guidance_scale}, guided_strength={guided_strength})"
             )
-            pipeline = load_juggernaut_pipeline(
-                model_id=args.juggernaut_model_id,
-                device=args.juggernaut_device,
-                local_files_only=args.juggernaut_local_only,
-                openvino_cache_dir=args.juggernaut_openvino_cache_dir,
-                task="img2img",
+            if runner is None:
+                runner = JuggernautRunner(
+                    model_id=args.juggernaut_model_id,
+                    device=args.juggernaut_device,
+                    local_files_only=args.juggernaut_local_only,
+                    openvino_cache_dir=args.juggernaut_openvino_cache_dir,
+                    task="img2img",
+                    warmup_width=args.juggernaut_width,
+                    warmup_height=args.juggernaut_height,
+                ).start()
+
+            result = runner.render(
+                RenderRequest(
+                    mode="img2img",
+                    prompt=args.juggernaut_prompt,
+                    negative_prompt=args.juggernaut_negative_prompt,
+                    output_path=args.juggernaut_guided_output,
+                    steps=steps,
+                    guidance_scale=guidance_scale,
+                    strength=guided_strength,
+                    width=args.juggernaut_width,
+                    height=args.juggernaut_height,
+                    seed=args.juggernaut_seed,
+                    input_image_path=deterministic_path,
+                )
             )
-            guided_path = render_img2img(
-                pipeline=pipeline,
-                input_image_path=deterministic_path,
-                output_path=args.juggernaut_guided_output,
-                prompt=args.juggernaut_prompt,
-                negative_prompt=args.juggernaut_negative_prompt,
-                steps=steps,
-                guidance_scale=guidance_scale,
-                strength=guided_strength,
-                width=args.juggernaut_width,
-                height=args.juggernaut_height,
-                seed=args.juggernaut_seed,
+            if not result.ok or result.output_path is None:
+                raise RuntimeError(result.error or "guided render returned no output")
+            print(
+                f"Juggernaut guided render: {result.render_seconds:.2f}s "
+                f"(waited {result.queue_wait_seconds:.2f}s for the pipeline)"
             )
-            shutil.copy2(guided_path, final_output)
+            shutil.copy2(result.output_path, final_output)
             print(f"One-shot pipeline final output saved from Juggernaut: {final_output}")
         except Exception as exc:
             used_fallback = True
@@ -921,6 +949,9 @@ def _run_social_pipeline(args) -> None:
                 f"Reason: {exc}"
             )
         juggernaut_sec = perf_counter() - t_juggernaut
+
+    if runner is not None:
+        runner.shutdown()
 
     total_sec = perf_counter() - t_total
     print(
