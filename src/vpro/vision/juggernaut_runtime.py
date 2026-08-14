@@ -38,24 +38,112 @@ def _aligned_dim(value: int) -> int:
     return max(64, int(value) - (int(value) % 8))
 
 
+TASK_TEXT2IMG = "text2img"
+TASK_IMG2IMG = "img2img"
+
+# SDXL fp16 VAE overflow yields all-black frames on some seeds; a real render never lands this low.
+BLACK_FRAME_MAX_LUMA = 8
+DEFAULT_RENDER_ATTEMPTS = 3
+RETRY_SEED_STRIDE = 10_007
+
+
+def _is_degenerate_image(image: Any) -> bool:
+    """True for all-black or non-finite output, the known fp16 VAE failure mode."""
+    import numpy as np
+
+    luma = np.asarray(image.convert("L"), dtype=np.float32)
+    if not np.isfinite(luma).all():
+        return True
+    return float(luma.max()) < BLACK_FRAME_MAX_LUMA
+
+
+def _render_with_black_guard(
+    pipeline: Any,
+    kwargs: dict[str, Any],
+    seed: int | None,
+    label: str,
+    attempts: int,
+) -> Any:
+    """Run the pipeline, re-rolling the seed if it produces a degenerate frame."""
+    attempts = max(1, int(attempts))
+    for attempt in range(attempts):
+        # Observed black frames are transient, not seed-determined: seed 1236 rendered black once
+        # and correctly on a later run. So retry the seed as-is first to preserve reproducibility,
+        # and only vary it if the same seed keeps failing.
+        attempt_seed = seed if (seed is None or attempt < 2) else seed + RETRY_SEED_STRIDE * (attempt - 1)
+        generator = _make_generator(attempt_seed)
+        if generator is not None:
+            kwargs["generator"] = generator
+        else:
+            kwargs.pop("generator", None)
+
+        result = pipeline(**kwargs)
+        images = getattr(result, "images", None)
+        if not images:
+            raise RuntimeError(f"Juggernaut {label} returned no images.")
+
+        image = images[0]
+        if not _is_degenerate_image(image):
+            if attempt:
+                print(f"Juggernaut {label} recovered on attempt {attempt + 1} (seed={attempt_seed}).", flush=True)
+            return image
+
+        suffix = "; retrying." if attempt + 1 < attempts else "; no attempts left."
+        print(
+            f"Juggernaut {label} produced a black frame on attempt {attempt + 1}/{attempts} "
+            f"(seed={attempt_seed}){suffix}",
+            flush=True,
+        )
+
+    raise RuntimeError(
+        f"Juggernaut {label} produced a black frame on all {attempts} attempts. "
+        "This is the known SDXL fp16 VAE overflow; the caller should fall back rather than "
+        "deliver the image."
+    )
+
+
+def _require_task(pipeline: Any, task: str) -> None:
+    """Guard against a text2img pipeline silently ignoring `image`/`strength` kwargs."""
+    name = type(pipeline).__name__
+    is_img2img = "Img2Img" in name
+    if task == TASK_IMG2IMG and not is_img2img:
+        raise RuntimeError(
+            f"render_img2img requires an image-to-image pipeline, got {name}. "
+            f"Load it with load_juggernaut_pipeline(..., task='{TASK_IMG2IMG}'). "
+            "A text2img pipeline accepts and discards 'image' and 'strength', producing output "
+            "that ignores the guide image entirely."
+        )
+    if task == TASK_TEXT2IMG and is_img2img:
+        raise RuntimeError(
+            f"render_text2img requires a text-to-image pipeline, got {name}. "
+            f"Load it with load_juggernaut_pipeline(..., task='{TASK_TEXT2IMG}')."
+        )
+
+
 def load_juggernaut_pipeline(
     model_id: str,
     device: str = "AUTO",
     local_files_only: bool = True,
     openvino_cache_dir: Path | None = None,
     timings: dict[str, float] | None = None,
+    task: str = TASK_TEXT2IMG,
 ) -> Any:
     """Load and compile the pipeline; `timings`, if given, is filled with per-phase seconds."""
+    if task not in (TASK_TEXT2IMG, TASK_IMG2IMG):
+        raise ValueError(f"task must be '{TASK_TEXT2IMG}' or '{TASK_IMG2IMG}', got {task!r}")
     _configure_offline_defaults(local_files_only)
 
     import_start = perf_counter()
     try:
-        from optimum.intel import OVDiffusionPipeline
+        from optimum.intel import OVPipelineForImage2Image, OVPipelineForText2Image
     except Exception as exc:
         raise RuntimeError(
             "Juggernaut runtime requires optimum[openvino]. "
             "Install with: pip install \"optimum[openvino]\""
         ) from exc
+    pipeline_class = (
+        OVPipelineForImage2Image if task == TASK_IMG2IMG else OVPipelineForText2Image
+    )
     import_sec = perf_counter() - import_start
     if timings is not None:
         timings["optimum_import_seconds"] = import_sec
@@ -73,14 +161,14 @@ def load_juggernaut_pipeline(
         ov_config["CACHE_DIR"] = str(cache_dir)
 
     print(
-        f"Loading and compiling OpenVINO pipeline components on {device}; "
+        f"Loading and compiling OpenVINO pipeline components on {device} for task '{task}'; "
         "this can take several minutes on first use.",
         flush=True,
     )
     if ov_config:
         print(f"OpenVINO compiled-model cache: {ov_config['CACHE_DIR']}", flush=True)
     load_start = perf_counter()
-    pipeline = OVDiffusionPipeline.from_pretrained(
+    pipeline = pipeline_class.from_pretrained(
         source,
         local_files_only=local_files_only,
         export=False,
@@ -91,7 +179,11 @@ def load_juggernaut_pipeline(
     metadata_sec = perf_counter() - load_start
     if timings is not None:
         timings["metadata_seconds"] = metadata_sec
-    print(f"OpenVINO pipeline metadata loaded in {metadata_sec:.2f}s.", flush=True)
+    print(
+        f"OpenVINO pipeline metadata loaded in {metadata_sec:.2f}s "
+        f"({type(pipeline).__name__}).",
+        flush=True,
+    )
 
     components = getattr(pipeline, "components", {})
     compile_total = 0.0
@@ -131,6 +223,7 @@ def render_text2img(
     width: int,
     height: int,
     seed: int | None,
+    attempts: int = DEFAULT_RENDER_ATTEMPTS,
 ) -> Path:
     try:
         from PIL import Image
@@ -139,8 +232,8 @@ def render_text2img(
             "Juggernaut text2img output processing requires Pillow. Install with: pip install pillow"
         ) from exc
 
+    _require_task(pipeline, TASK_TEXT2IMG)
     output_path = _resolve_path(output_path)
-    generator = _make_generator(seed)
 
     requested_w = int(width)
     requested_h = int(height)
@@ -156,14 +249,8 @@ def render_text2img(
     }
     if negative_prompt:
         kwargs["negative_prompt"] = negative_prompt
-    if generator is not None:
-        kwargs["generator"] = generator
 
-    result = pipeline(**kwargs)
-    if not hasattr(result, "images") or not result.images:
-        raise RuntimeError("Juggernaut text2img returned no images.")
-
-    image = result.images[0]
+    image = _render_with_black_guard(pipeline, kwargs, seed, "text2img", attempts)
     if image.size != (requested_w, requested_h):
         image = image.resize((requested_w, requested_h), Image.Resampling.LANCZOS)
     image.save(output_path)
@@ -182,6 +269,7 @@ def render_img2img(
     width: int,
     height: int,
     seed: int | None,
+    attempts: int = DEFAULT_RENDER_ATTEMPTS,
 ) -> Path:
     try:
         from PIL import Image
@@ -190,12 +278,13 @@ def render_img2img(
             "Juggernaut img2img requires Pillow. Install with: pip install pillow"
         ) from exc
 
+    _require_task(pipeline, TASK_IMG2IMG)
+
     input_image_path = input_image_path.expanduser().resolve()
     if not input_image_path.exists():
         raise RuntimeError(f"Juggernaut guide image not found: {input_image_path}")
 
     output_path = _resolve_path(output_path)
-    generator = _make_generator(seed)
 
     requested_w = int(width)
     requested_h = int(height)
@@ -204,6 +293,11 @@ def render_img2img(
 
     guide_image = Image.open(input_image_path).convert("RGB")
     guide_image = guide_image.resize((model_w, model_h), Image.Resampling.LANCZOS)
+    if _is_degenerate_image(guide_image):
+        raise RuntimeError(
+            f"Juggernaut guide image is black or non-finite: {input_image_path}. "
+            "Rendering from it would silently produce a black result."
+        )
 
     kwargs: dict[str, Any] = {
         "prompt": prompt,
@@ -214,14 +308,8 @@ def render_img2img(
     }
     if negative_prompt:
         kwargs["negative_prompt"] = negative_prompt
-    if generator is not None:
-        kwargs["generator"] = generator
 
-    result = pipeline(**kwargs)
-    if not hasattr(result, "images") or not result.images:
-        raise RuntimeError("Juggernaut img2img returned no images.")
-
-    image = result.images[0]
+    image = _render_with_black_guard(pipeline, kwargs, seed, "img2img", attempts)
     if image.size != (requested_w, requested_h):
         image = image.resize((requested_w, requested_h), Image.Resampling.LANCZOS)
     image.save(output_path)

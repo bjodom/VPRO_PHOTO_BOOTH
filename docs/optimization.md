@@ -284,13 +284,15 @@ Now the dominant cost per guest, and the only lever that gets a session under ~4
 | Phase | Work | Expected payoff |
 | --- | --- | --- |
 | 0 ✅ | Instrument startup/render; profile the load path | **Found and fixed a 20× startup regression (§10)** |
-| 1 | `JuggernautRunner` in-process worker + warmup render at boot | **~19 s off every guest after the first — ~45% of a session** |
-| 2 | Profile the ~19 s fixed per-render overhead (VAE decode, text encoders) | Potentially the largest remaining win; currently unmeasured |
-| 3 | Cache text-encoder embeddings; evaluate VAE decode cost at 1080×1350 | Follows directly from Phase 2 |
-| 4 | Decide img2img-guided vs. composite-on-generated-background | Gates speculative pre-render (§5.1) |
-| 5+ | Future ideas (§9) once the above is proven | Multi-process / multi-kiosk scale-out |
+| 0.5 ✅ | Fix `render_img2img` silently running text2img | **Correctness — plus guided render 20.2 s → 11.2 s** |
+| 1 ✅ | Detect black/non-finite renders and retry; reject black guide images | No black frame can reach a guest silently |
+| 2 | `JuggernautRunner` in-process worker + warmup render at boot | ~16 s off every guest after the first |
+| 3 | Attack the ~7.1 s fixed per-render cost (VAE, text encoders) | Now the largest non-step cost |
+| 4 | Step/scheduler/CFG tuning at fixed seed | ~1.01 s/step; matters less at strength 0.16 |
+| 5 | Decide img2img-guided vs. composite-on-generated-background | Gates speculative pre-render (§5.1) |
+| 6+ | Future ideas (§9) | Multi-process / multi-kiosk scale-out |
 
-Phase 0 is done. Phase 1 is the next commitment; Phase 2 may well overtake it in value.
+Current per-guest cost: **~16 s startup + ~11 s guided render ≈ 27 s**, down from ~400 s.
 
 ## 8. Open questions
 
@@ -472,35 +474,96 @@ Confirmed with the environment variables unset in the shell, so the in-code defa
 work. Render times are unchanged (~16–21 s at `fast`/16 steps), as expected — this was pure startup
 stall.
 
-### The production path is img2img, not text2img
+### The production path is img2img — and it is silently running text2img
 
 [tests/juggernaut_test.py](tests/juggernaut_test.py) benchmarks **text2img**, but the kiosk
-(`_run_social_pipeline` in [src/vpro/cli.py](src/vpro/cli.py)) uses **img2img guided by the composed
-portrait**, at low strength (`identity-lock` 0.16, `balanced` 0.20, `stylized` 0.35). Effective
-denoising steps are `steps × strength`, so the real render does far fewer steps than the bench.
+(`_run_social_pipeline` in [src/vpro/cli.py](src/vpro/cli.py)) is supposed to use **img2img guided
+by the composed portrait**, at low strength (`identity-lock` 0.16, `balanced` 0.20, `stylized` 0.35).
 
-Measured via `scripts/probe_load_phases.py --mode img2img` (28 steps, strength 0.16, ~4 effective
-steps, 1080×1350):
+**It does not. `render_img2img` runs the text2img pipeline and discards the guide image.**
 
-| Run | Seconds |
-| --- | ---: |
-| 1 | 22.56 |
-| 2 | 21.68 |
-| 3 | 22.16 |
+Evidence, from `scripts/probe_load_phases.py --mode img2img --profile`
+(raw output in `outputs/render_profile.txt`):
 
-**Solving the two data points gives the real cost model:**
+1. The call lands in
+   `diffusers/pipelines/stable_diffusion_xl/pipeline_stable_diffusion_xl.py:821(__call__)` — the
+   **text2img** SDXL pipeline. The img2img pipeline lives in
+   `pipeline_stable_diffusion_xl_img2img.py` and never appears.
+2. The UNet ran **28 forwards for `steps=28, strength=0.16`**. A real img2img run would do
+   `steps × strength` ≈ 4.
+3. `torch.randn` is called 29 times — latents are pure noise, not an encoded guide image. There is
+   no VAE *encode* in the profile at all, only a decode.
+4. **Decisive:** rendering the same seed at `strength=0.16` and `strength=0.95` produced
+   **byte-identical files** (SHA256 `70AA5FCC…4EF2F2`). `strength` has no effect because nothing
+   is reading it.
 
-- text2img: 36 steps → 42.7 s
-- img2img: ~4 effective steps → 22.1 s
+**Root cause.** `OVDiffusionPipeline.from_pretrained` returns the text2img class
+(`OVStableDiffusionXLPipeline`). `render_img2img` then called it with `image=` and `strength=`
+kwargs, which diffusers' text2img `__call__` swallows via `**kwargs` instead of rejecting. The
+failure was silent — no exception, plausible-looking output.
 
-⇒ **~0.65 s per denoising step, plus ~19 s of fixed per-render overhead.**
+**Fixed.** `load_juggernaut_pipeline` now takes a `task` argument and selects
+`OVPipelineForImage2Image` or `OVPipelineForText2Image`; `render_text2img` / `render_img2img` call
+`_require_task`, which raises if the pipeline class does not match the requested mode. The CLI
+guided and social paths request `task="img2img"`.
 
-That fixed ~19 s — VAE encode, both text encoders, VAE decode at 1080×1350, resize and save — is
-**the largest single component of a production render**, larger than the denoising itself. It is
-currently unprofiled and is the most promising unexplored lever in this document.
+Verified after the fix: the pipeline is `OVStableDiffusionXLImg2ImgPipeline`, `strength=0.16` and
+`strength=0.95` now produce **different** images, step counts scale with strength, and a
+`strength=0.16` render visibly preserves the guide composition.
 
-It also means step-count tuning (§4.1) barely matters for the guided path: dropping 28 steps to 16
-at strength 0.16 saves under 2 s.
+**Bonus: it is also faster.** The guided render was doing all 28 steps; it now does
+`steps × strength` ≈ 4.
+
+| Guided render (28 steps) | Before fix | After fix |
+| --- | ---: | ---: |
+| `strength=0.16` | ~20.2 s (28 steps, guide ignored) | **11.2 s** (~4 steps) |
+| `strength=0.95` | ~20.2 s (identical output) | 34.4 s (~27 steps) |
+
+Solving those two points gives the current cost model: **~7.1 s fixed per render, plus ~1.01 s per
+denoising step.** The fixed portion is VAE encode/decode, both text encoders, resize and save.
+
+### Black-render guard (fixed)
+
+`run0012` (text2img, `quality` preset, seed 1236) came out **entirely black** (`mean=0.00, max=0`),
+while runs 1–11 from the same session were fine (mean 80–162).
+
+**The failure is transient, not seed-determined.** Re-running the identical command with the same
+seed 1236 and the same preset produced a correct image (`run0014`, mean 158.5). So the initial
+"fp16 VAE overflow on particular seeds" hypothesis is wrong — a fixed seed does not reproduce it.
+The cause is more likely transient GPU/driver state. Root cause remains unidentified.
+
+That transience is what makes a guard practical: simply running again usually works.
+
+Implemented in [src/vpro/vision/juggernaut_runtime.py](src/vpro/vision/juggernaut_runtime.py):
+
+- `_is_degenerate_image` flags all-black (max luma < 8) or non-finite output.
+- `_render_with_black_guard` wraps both render paths, retrying up to `DEFAULT_RENDER_ATTEMPTS` (3).
+  Because the failure is transient, the first retry **reuses the same seed** to preserve
+  reproducibility; only later retries vary it.
+- After exhausting attempts it raises, so the social pipeline falls back to the deterministic
+  compose rather than delivering a black frame.
+- `render_img2img` also rejects a black *guide* image up front — otherwise a bad guide silently
+  yields a black result, which is exactly what confused the img2img diagnosis above.
+
+`scripts/check_output_brightness.py` remains for scanning existing outputs in bulk.
+
+**Still open:** the underlying cause. The guard converts a silent product failure into a retry plus
+a logged warning, but does not explain why the VAE occasionally emits a black frame. Worth
+revisiting if the retry rate turns out to be high during an event.
+
+### Correction: the earlier "19 s fixed overhead" figure was wrong
+
+An earlier revision of this document claimed ~19 s of fixed per-render cost, derived by comparing a
+36-step text2img run against what was assumed to be a 4-effective-step img2img run. **That premise
+was wrong** — the "img2img" run was secretly text2img and executed all 28 steps.
+
+With img2img actually working, the measured model is **~7.1 s fixed + ~1.01 s/step**. The fixed
+portion is real but far smaller than claimed, and it is now the main target for further render
+optimization.
+
+One discrepancy still needs a clean measurement: text2img at 36 steps measured 1.17 s/step
+(42.7 s), close to but not identical with the 1.01 s/step derived from img2img. Do not over-fit to
+either figure.
 
 ### Consequences for the plan
 

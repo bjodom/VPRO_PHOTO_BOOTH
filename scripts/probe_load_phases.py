@@ -59,7 +59,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="img2img strength; the identity-lock preset uses 0.16, balanced 0.20, stylized 0.35.",
     )
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="cProfile the final render to split fixed overhead from denoising.",
+    )
     return parser
+
+
+def _print_profile(profiler: object, top: int) -> None:
+    import pstats
+
+    stats = pstats.Stats(profiler)  # type: ignore[arg-type]
+    print("\n--- render: top by cumulative time ---")
+    stats.sort_stats("cumulative").print_stats(top)
+    print("\n--- render: top by internal time ---")
+    stats.sort_stats("tottime").print_stats(top)
 
 
 def probe_img2img(args: argparse.Namespace) -> int:
@@ -83,11 +98,20 @@ def probe_img2img(args: argparse.Namespace) -> int:
         device=args.device,
         local_files_only=True,
         openvino_cache_dir=args.cache_dir,
+        task="img2img",
     )
-    print(f"\nstartup: {perf_counter() - start:.2f}s")
+    print(f"\nstartup: {perf_counter() - start:.2f}s ({type(pipeline).__name__})")
 
     out_dir = REPO_ROOT / "outputs" / "img2img_probe"
+    profiler = None
     for index in range(args.runs):
+        is_last = index == args.runs - 1
+        if args.profile and is_last:
+            import cProfile
+
+            profiler = cProfile.Profile()
+            profiler.enable()
+
         start = perf_counter()
         render_img2img(
             pipeline=pipeline,
@@ -103,11 +127,18 @@ def probe_img2img(args: argparse.Namespace) -> int:
             seed=1234,
         )
         elapsed = perf_counter() - start
+
+        if profiler is not None and is_last:
+            profiler.disable()
+
         effective = max(1, round(args.steps * args.strength))
         print(
             f"img2img run {index + 1}: {elapsed:.2f}s "
             f"(steps={args.steps} strength={args.strength} -> ~{effective} effective steps)"
         )
+
+    if profiler is not None:
+        _print_profile(profiler, args.top)
     return 0
 
 
