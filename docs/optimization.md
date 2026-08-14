@@ -288,7 +288,7 @@ Now the dominant cost per guest, and the only lever that gets a session under ~4
 | 1 ✅ | Detect black/non-finite renders and retry; reject black guide images | No black frame can reach a guest silently |
 | 2 ✅ | `JuggernautRunner` in-process worker + warmup render at boot | Startup paid once; guided render ~5–6 s steady state |
 | 3 ✅ | Wire the kiosk (`_run_social_pipeline`) to the runner; load during capture | Startup overlaps posing/compose |
-| 4 | Measure preload vs. live pose preview contention on real hardware | `--juggernaut-no-preload` exists as the escape hatch |
+| 4 ✅ | Measure preload vs. live pose preview contention on real hardware | Warmup deferred; preview stays at 30 fps |
 | 5 | Attack the remaining fixed per-render cost | Now the largest slice of a ~5 s render |
 | 6 | Step/scheduler/CFG tuning at fixed seed | Diminishing returns at strength 0.16 |
 | 7 | Decide img2img-guided vs. composite-on-generated-background | Gates speculative pre-render (§5.1) |
@@ -603,6 +603,46 @@ steady-state guided render is **~5–6 s**, not the ~11–12 s measured standalo
 - **A failed warmup is logged and ignored** rather than preventing service.
 - **One runner owns one task.** Supporting both text2img and img2img in a single runner would mean
   two compiled pipelines; construct two runners if both are needed.
+
+### GPU contention: measured, and it was the warmup, not the load
+
+Measured on the laptop's Arc 390 (16 GB) with the built-in camera, via
+[tests/gpu_contention_test.py](tests/gpu_contention_test.py). This is the worst case — the target
+booth is an Arc B70 (32 GB).
+
+Baseline preview: **29–30 fps** (camera-capped), YOLO pose inference **15.9 ms p50**, i.e. ~63 fps
+of capability and roughly 50% GPU headroom.
+
+**With the warmup render running during the preview:**
+
+| Window | Preview | p50 | p95 | worst frame |
+| --- | --- | ---: | ---: | ---: |
+| Before load | 29–30 fps | 16.0 ms | 16.7 ms | 17.5 ms |
+| Import + metadata + compile (5–21 s) | **29–30 fps, unaffected** | — | — | — |
+| **Warmup render (22–30 s)** | **8–20 fps** | 17.2 ms | 46.6 ms | **579.7 ms** |
+| After ready | 29–30 fps | 16.2 ms | 17.1 ms | 18.6 ms |
+
+The important detail: **loading and compiling cost the preview nothing.** All the damage came from
+the diffusion inference of the warmup render — a visible stutter for ~9 s including one 0.58 s
+freeze, exactly while a guest would be posing.
+
+**Fix: defer the warmup.** `JuggernautRunner` gained `submit_warmup()`, which queues the warmup as
+a normal request. `_run_social_pipeline` constructs the runner with `warmup=False`, so loading and
+compiling overlap the capture, then calls `submit_warmup()` immediately after the camera is
+released, so the warmup overlaps RMBG and compose instead.
+
+**After the fix, same test:**
+
+| Window | Preview | p50 | p95 | worst frame |
+| --- | --- | ---: | ---: | ---: |
+| Before load | 29–30 fps | 16.2 ms | 17.1 ms | 18.0 ms |
+| During load | **29–30 fps** | 17.0 ms | 22.3 ms | 52.8 ms |
+| After ready | 29–30 fps | 16.3 ms | 18.6 ms | 21.8 ms |
+
+The preview never drops. Residual impact is p95 rising 17 → 22 ms and a single 52.8 ms frame,
+against a 33 ms camera budget — not perceptible.
+
+Re-run this on each new booth: the headroom depends on GPU class and VRAM.
 
 ### Kiosk wiring: load during capture, not after it
 

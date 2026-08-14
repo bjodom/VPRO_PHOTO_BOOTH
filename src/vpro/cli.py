@@ -829,6 +829,8 @@ def _run_social_pipeline(args) -> None:
     t_total = perf_counter()
 
     # Loading takes ~29s, so start it before the camera work and let it overlap posing and compose.
+    # Warmup is deferred: compiling does not disturb the preview, but diffusion inference does
+    # (measured 30fps -> 8fps), so it runs after the camera is released.
     runner: JuggernautRunner | None = None
     if not args.juggernaut_skip_guided and not args.juggernaut_no_preload:
         runner = JuggernautRunner(
@@ -837,6 +839,7 @@ def _run_social_pipeline(args) -> None:
             local_files_only=args.juggernaut_local_only,
             openvino_cache_dir=args.juggernaut_openvino_cache_dir,
             task="img2img",
+            warmup=False,
             warmup_width=args.juggernaut_width,
             warmup_height=args.juggernaut_height,
         ).start()
@@ -859,6 +862,9 @@ def _run_social_pipeline(args) -> None:
         wrist_stable_seconds=args.capture_wrist_stable_seconds,
     )
     capture_sec = perf_counter() - t_capture
+
+    if runner is not None:
+        runner.submit_warmup()  # camera is released; overlap warmup with RMBG and compose
 
     rmbg_sec = 0.0
     if not args.capture_skip_rmbg:
