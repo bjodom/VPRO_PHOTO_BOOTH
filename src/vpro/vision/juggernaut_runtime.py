@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+
+
+def _configure_offline_defaults(local_files_only: bool) -> None:
+    """Avoid startup network calls that block ~337s on socket timeouts when the Hub is unreachable.
+
+    `local_files_only` is not honored by optimum's library inference, which still queries the Hub;
+    OpenVINO telemetry separately blocks on its own analytics endpoint.
+    """
+    os.environ.setdefault("OPENVINO_TELEMETRY_OPT_OUT", "1")
+    if local_files_only:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
 def _resolve_path(path: Path) -> Path:
@@ -31,7 +43,12 @@ def load_juggernaut_pipeline(
     device: str = "AUTO",
     local_files_only: bool = True,
     openvino_cache_dir: Path | None = None,
+    timings: dict[str, float] | None = None,
 ) -> Any:
+    """Load and compile the pipeline; `timings`, if given, is filled with per-phase seconds."""
+    _configure_offline_defaults(local_files_only)
+
+    import_start = perf_counter()
     try:
         from optimum.intel import OVDiffusionPipeline
     except Exception as exc:
@@ -39,6 +56,10 @@ def load_juggernaut_pipeline(
             "Juggernaut runtime requires optimum[openvino]. "
             "Install with: pip install \"optimum[openvino]\""
         ) from exc
+    import_sec = perf_counter() - import_start
+    if timings is not None:
+        timings["optimum_import_seconds"] = import_sec
+    print(f"optimum.intel import: {import_sec:.2f}s", flush=True)
 
     source: str = model_id
     candidate = Path(model_id).expanduser()
@@ -67,9 +88,13 @@ def load_juggernaut_pipeline(
         ov_config=ov_config,
         compile=False,
     )
-    print(f"OpenVINO pipeline metadata loaded in {perf_counter() - load_start:.2f}s.", flush=True)
+    metadata_sec = perf_counter() - load_start
+    if timings is not None:
+        timings["metadata_seconds"] = metadata_sec
+    print(f"OpenVINO pipeline metadata loaded in {metadata_sec:.2f}s.", flush=True)
 
     components = getattr(pipeline, "components", {})
+    compile_total = 0.0
     for component_name, component in components.items():
         compile_method = getattr(component, "compile", None)
         if not callable(compile_method):
@@ -77,13 +102,22 @@ def load_juggernaut_pipeline(
         print(f"Compiling OpenVINO component on {device}: {component_name}", flush=True)
         component_start = perf_counter()
         compile_method()
+        component_sec = perf_counter() - component_start
+        compile_total += component_sec
+        if timings is not None:
+            timings[f"compile_{component_name}_seconds"] = component_sec
         print(
             f"OpenVINO component ready: {component_name} "
-            f"({perf_counter() - component_start:.2f}s)",
+            f"({component_sec:.2f}s)",
             flush=True,
         )
 
-    print(f"OpenVINO pipeline components ready in {perf_counter() - load_start:.2f}s.", flush=True)
+    total_sec = perf_counter() - load_start
+    if timings is not None:
+        timings["compile_total_seconds"] = compile_total
+        timings["load_total_seconds"] = total_sec
+        timings["startup_total_seconds"] = import_sec + total_sec
+    print(f"OpenVINO pipeline components ready in {total_sec:.2f}s.", flush=True)
     return pipeline
 
 

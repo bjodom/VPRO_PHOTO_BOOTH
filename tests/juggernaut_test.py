@@ -47,7 +47,10 @@ from time import perf_counter
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+_import_start = perf_counter()
 from vpro.vision.juggernaut_runtime import load_juggernaut_pipeline, render_text2img  # noqa: E402
+
+RUNTIME_IMPORT_SECONDS = perf_counter() - _import_start
 
 PHOTOREAL_STYLE = (
     "photorealistic travel photograph, shot on Canon EOS R5, 35mm lens, f/8, "
@@ -114,9 +117,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--openvino-cache-dir",
         type=Path,
         default=REPO_ROOT / "outputs" / "openvino_cache" / "juggernaut",
-        help="Persistent OpenVINO compiled-model cache directory.",
+        help=(
+            "Persistent OpenVINO compiled-model cache directory. "
+            "Point at an empty/new directory to measure cold-cache startup."
+        ),
+    )
+    parser.add_argument(
+        "--metrics-file",
+        type=Path,
+        default=REPO_ROOT / "outputs" / "juggernaut_metrics.jsonl",
+        help="JSONL file collecting one machine-readable record per render.",
     )
     return parser
+
+
+def cache_blob_count(cache_dir: Path) -> int:
+    cache_dir = cache_dir.expanduser()
+    if not cache_dir.exists():
+        return 0
+    return sum(1 for entry in cache_dir.iterdir() if entry.is_file())
+
+
+def append_metrics(metrics_path: Path, record: dict[str, object]) -> None:
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with metrics_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
 
 
 def validate(args: argparse.Namespace, steps: int) -> None:
@@ -162,17 +187,33 @@ def main(argv: list[str] | None = None) -> int:
     log_path = args.log_file.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = args.metrics_file.expanduser().resolve()
+    cache_dir = args.openvino_cache_dir.expanduser().resolve()
+
+    blobs_before = cache_blob_count(cache_dir)
+    cache_state = "cold" if blobs_before == 0 else "warm"
+    print(f"OpenVINO cache {cache_state}: {blobs_before} blob(s) in {cache_dir}")
+    print(f"Runtime import took {RUNTIME_IMPORT_SECONDS:.2f}s")
 
     print(f"Loading Juggernaut pipeline: {args.model_id} (device={args.device}, local_only={args.local_only})")
+    load_timings: dict[str, float] = {}
     load_start = perf_counter()
     pipeline = load_juggernaut_pipeline(
         model_id=args.model_id,
         device=args.device,
         local_files_only=args.local_only,
         openvino_cache_dir=args.openvino_cache_dir,
+        timings=load_timings,
     )
     load_sec = perf_counter() - load_start
+    blobs_after = cache_blob_count(cache_dir)
     print(f"Pipeline ready in {load_sec:.2f}s")
+    print(
+        f"Startup total (import + load): {RUNTIME_IMPORT_SECONDS + load_sec:.2f}s; "
+        f"cache blobs {blobs_before} -> {blobs_after} (+{blobs_after - blobs_before})"
+    )
+    for phase, seconds in sorted(load_timings.items(), key=lambda item: -item[1]):
+        print(f"    {phase}: {seconds:.2f}s")
 
     for index in range(args.runs):
         run_number = next_run_number(log_path)
@@ -194,7 +235,10 @@ def main(argv: list[str] | None = None) -> int:
             seed=seed,
         )
         render_sec = perf_counter() - render_start
-        print(f"[run {run_number}] saved {saved_path} in {render_sec:.2f}s")
+        print(
+            f"[run {run_number}] saved {saved_path} in {render_sec:.2f}s "
+            f"({render_sec / steps:.2f}s/step)"
+        )
 
         append_log(
             log_path,
@@ -203,7 +247,14 @@ def main(argv: list[str] | None = None) -> int:
                 "model_id": args.model_id,
                 "device": args.device,
                 "local_only": args.local_only,
-                "openvino_cache_dir": str(args.openvino_cache_dir.expanduser().resolve()),
+                "openvino_cache_dir": str(cache_dir),
+                "cache_state": cache_state,
+                "cache_blobs_before": blobs_before,
+                "cache_blobs_after": blobs_after,
+                "runtime_import_seconds": round(RUNTIME_IMPORT_SECONDS, 2),
+                "load_seconds": round(load_sec, 2),
+                "startup_total_seconds": round(RUNTIME_IMPORT_SECONDS + load_sec, 2),
+                "render_index_in_process": index + 1,
                 "scene": "custom" if args.prompt else args.scene,
                 "preset": args.preset,
                 "steps": steps,
@@ -212,13 +263,43 @@ def main(argv: list[str] | None = None) -> int:
                 "height": args.height,
                 "seed": seed,
                 "render_seconds": round(render_sec, 2),
+                "seconds_per_step": round(render_sec / steps, 3),
                 "output": saved_path,
                 "prompt": json.dumps(prompt),
                 "negative_prompt": json.dumps(args.negative_prompt),
             },
         )
 
+        append_metrics(
+            metrics_path,
+            {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "run_number": run_number,
+                "render_index_in_process": index + 1,
+                "model_id": args.model_id,
+                "device": args.device,
+                "cache_state": cache_state,
+                "cache_blobs_before": blobs_before,
+                "cache_blobs_after": blobs_after,
+                "runtime_import_seconds": round(RUNTIME_IMPORT_SECONDS, 3),
+                "load_seconds": round(load_sec, 3),
+                "startup_total_seconds": round(RUNTIME_IMPORT_SECONDS + load_sec, 3),
+                "load_phases": {key: round(value, 3) for key, value in load_timings.items()},
+                "scene": "custom" if args.prompt else args.scene,
+                "preset": args.preset,
+                "steps": steps,
+                "guidance_scale": guidance_scale,
+                "width": args.width,
+                "height": args.height,
+                "seed": seed,
+                "render_seconds": round(render_sec, 3),
+                "seconds_per_step": round(render_sec / steps, 3),
+                "output": str(saved_path),
+            },
+        )
+
     print(f"\nSettings log appended: {log_path}")
+    print(f"Metrics appended: {metrics_path}")
     return 0
 
 
