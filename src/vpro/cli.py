@@ -134,6 +134,22 @@ def build_parser() -> ArgumentParser:
         help="RMBG model directory containing model.xml and model.bin.",
     )
     parser.add_argument(
+        "--kiosk",
+        action="store_true",
+        help="Run the persistent kiosk app (web UI on localhost, QR handoff on the LAN).",
+    )
+    parser.add_argument(
+        "--kiosk-host",
+        default="127.0.0.1",
+        help="Interface for the kiosk UI. Keep on localhost; only delivery needs the LAN.",
+    )
+    parser.add_argument("--kiosk-port", type=int, default=8000, help="Kiosk UI port.")
+    parser.add_argument(
+        "--kiosk-no-generation",
+        action="store_true",
+        help="Skip Juggernaut and deliver the deterministic compose; useful for UI work.",
+    )
+    parser.add_argument(
         "--test-delivery",
         action="store_true",
         help="Serve one image over the local network and print a scannable QR code, then wait.",
@@ -1030,77 +1046,19 @@ def _compose_portrait_from_image(
     output_image_path: Path,
     mask_quality: str,
 ) -> Path:
-    import cv2
+    from .vision.pipeline import compose_portrait_from_image
 
-    input_image_path = input_image_path.expanduser().resolve()
-    scene_image_path = scene_image_path.expanduser().resolve()
-    prop_image_path = prop_image_path.expanduser().resolve()
-
-    if not input_image_path.exists():
-        raise RuntimeError(f"Input image not found: {input_image_path}")
-    if not scene_image_path.exists():
-        raise RuntimeError(
-            "Scene image not found. Provide --compose-scene-image with a valid portrait "
-            f"asset path. Missing: {scene_image_path}"
-        )
-    if not prop_image_path.exists():
-        raise RuntimeError(
-            "Laptop prop image not found. Provide --compose-prop-image with a valid "
-            f"alpha PNG. Missing: {prop_image_path}"
-        )
-
-    source = cv2.imread(str(input_image_path), cv2.IMREAD_COLOR)
-    if source is None:
-        raise RuntimeError(f"Could not read input image: {input_image_path}")
-
-    rmbg_runtime = load_rmbg_runtime(rmbg_model_dir, device=rmbg_device)
-    raw_mask, foreground = rmbg_runtime.segment(source)
-
-    yolo_results = backend.predict({"source": source, "device": yolo_device, "verbose": False})
-    if not isinstance(yolo_results, list) or not yolo_results:
-        raise RuntimeError("YOLO returned no results for portrait composition.")
-
-    result = yolo_results[0]
-    try:
-        primary = select_primary_subject(result, source.shape[:2])
-    except RuntimeError:
-        ys, xs = np.where(raw_mask > 16)
-        if len(xs) == 0 or len(ys) == 0:
-            raise RuntimeError(
-                "Could not determine a primary subject from YOLO or RMBG mask."
-            )
-        primary = SubjectSelection(
-            index=-1,
-            bbox_xyxy=(int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1),
-            score=0.0,
-        )
-
-    clean_mask = cleanup_mask_for_primary_subject(
-        raw_mask,
-        primary.bbox_xyxy,
-        quality=mask_quality,
-    )
-    foreground[:, :, 3] = clean_mask
-
-    composed = compose_portrait(
-        source_bgr=source,
-        foreground_bgra=foreground,
-        cleaned_mask=clean_mask,
-        yolo_result=result,
-        primary=primary,
-        scene_path=scene_image_path,
-        prop_path=prop_image_path,
-        output_size=(1080, 1350),
+    return compose_portrait_from_image(
+        backend=backend,
+        input_image_path=input_image_path,
+        rmbg_model_dir=rmbg_model_dir,
+        rmbg_device=rmbg_device,
+        yolo_device=yolo_device,
+        scene_image_path=scene_image_path,
+        prop_image_path=prop_image_path,
+        output_image_path=output_image_path,
         mask_quality=mask_quality,
     )
-
-    saved_path = save_composed_image(composed.image_bgr, output_image_path)
-    anchor_text = "none" if composed.anchor_xy is None else f"{composed.anchor_xy[0]},{composed.anchor_xy[1]}"
-    print(
-        "Portrait composition saved: "
-        f"{saved_path} (primary_subject_index={composed.primary_index}, prop_anchor={anchor_text})"
-    )
-    return saved_path
 
 
 def _run_smoke_test(
@@ -1164,6 +1122,46 @@ def _run_smoke_test(
         "Smoke test passed: "
         f"processed={processed}, elapsed={elapsed:.2f}s, avg_fps={fps:.2f}"
     )
+
+
+def _run_kiosk(args) -> None:
+    from .kiosk.app import run
+    from .kiosk.service import KioskConfig, KioskService
+
+    config = KioskConfig(
+        camera_index=args.camera_index,
+        capture_width=args.capture_width,
+        capture_height=args.capture_height,
+        yolo_device=args.device,
+        rmbg_model_dir=args.rmbg_model_dir,
+        rmbg_device=args.rmbg_device,
+        mask_quality=args.mask_quality,
+        scene_image=args.compose_scene_image,
+        prop_image=args.compose_prop_image,
+        juggernaut_model_id=args.juggernaut_model_id,
+        juggernaut_device=args.juggernaut_device,
+        juggernaut_cache_dir=args.juggernaut_openvino_cache_dir,
+        delivery_channel=args.delivery_channel,
+        delivery_host=args.delivery_host,
+        delivery_port=args.delivery_port,
+        delivery_advertise_host=args.delivery_advertise_host,
+        enable_generation=not args.kiosk_no_generation,
+    )
+    # --model-path defaults to the generic "models" dir, which is not a YOLO export directory.
+    if args.model_path != Path("models"):
+        config.yolo_model_path = args.model_path
+
+    service = KioskService(config).start()
+    print(f"\nKiosk UI:  http://{args.kiosk_host}:{args.kiosk_port}")
+    if service.delivery is not None and hasattr(service.delivery, "server"):
+        print(f"Handoff:   {service.delivery.server.base_url} (guest phones)")
+    print("Ctrl+C to stop.\n")
+    try:
+        run(service, host=args.kiosk_host, port=args.kiosk_port)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        service.shutdown()
 
 
 def _run_delivery_test(args) -> None:
@@ -1245,6 +1243,10 @@ def main() -> None:
 
     if args.test_delivery:
         _run_delivery_test(args)
+        return
+
+    if args.kiosk:
+        _run_kiosk(args)
         return
 
     if args.test_juggernaut:

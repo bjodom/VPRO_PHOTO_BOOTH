@@ -20,6 +20,8 @@ class CompositionResult:
     image_bgr: np.ndarray
     primary_index: int
     anchor_xy: tuple[int, int] | None
+    #: Where subject and prop pixels landed on the canvas; inpainting locks these.
+    coverage_mask: np.ndarray | None = None
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -231,6 +233,29 @@ def _compute_prop_anchor(
     return (float(wrist[0]), float(wrist[1])), angle
 
 
+def _overlay_alpha(base_mask: np.ndarray, overlay_bgra: np.ndarray, x: int, y: int) -> np.ndarray:
+    """Accumulate overlay coverage using the same placement maths as _overlay_bgra."""
+    out = base_mask.copy()
+    h, w = out.shape[:2]
+    oh, ow = overlay_bgra.shape[:2]
+
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(w, x + ow)
+    y2 = min(h, y + oh)
+    if x1 >= x2 or y1 >= y2:
+        return out
+
+    ox1 = x1 - x
+    oy1 = y1 - y
+    ox2 = ox1 + (x2 - x1)
+    oy2 = oy1 + (y2 - y1)
+
+    patch_alpha = overlay_bgra[oy1:oy2, ox1:ox2, 3]
+    out[y1:y2, x1:x2] = np.maximum(out[y1:y2, x1:x2], patch_alpha)
+    return out
+
+
 def _overlay_bgra(base_bgr: np.ndarray, overlay_bgra: np.ndarray, x: int, y: int) -> np.ndarray:
     out = base_bgr.copy()
     h, w = out.shape[:2]
@@ -300,6 +325,9 @@ def compose_portrait(
     paste_x = int((canvas_w - out_w) / 2)
 
     composed = _overlay_bgra(canvas, subj_scaled, paste_x, paste_y)
+    coverage = _overlay_alpha(
+        np.zeros(canvas.shape[:2], dtype=np.uint8), subj_scaled, paste_x, paste_y
+    )
 
     # Deterministic laptop prop anchor from keypoints.
     anchor_xy: tuple[int, int] | None = None
@@ -344,8 +372,14 @@ def compose_portrait(
     px = tx - prop_w // 2
     py = ty - int(prop_h * 0.35)
     composed = _overlay_bgra(composed, prop_rot, px, py)
+    coverage = _overlay_alpha(coverage, prop_rot, px, py)
 
-    return CompositionResult(image_bgr=composed, primary_index=primary.index, anchor_xy=anchor_xy)
+    return CompositionResult(
+        image_bgr=composed,
+        primary_index=primary.index,
+        anchor_xy=anchor_xy,
+        coverage_mask=coverage,
+    )
 
 
 def save_composed_image(image_bgr: np.ndarray, output_path: Path) -> Path:
