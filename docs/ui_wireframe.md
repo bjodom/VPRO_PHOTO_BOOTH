@@ -1,7 +1,12 @@
 # vPRO Kiosk UI Wireframe (Low Fidelity)
 
 ## Purpose
-This wireframe defines the primary kiosk experience screens for the local, OpenVINO-first, Twilio-MMS delivery flow.
+This wireframe defines the primary kiosk experience screens for the local, OpenVINO-first flow.
+
+Delivery is by **on-screen QR code**: the guest scans it and downloads the image from the kiosk
+over the local network. No phone number is collected, which removes the phone-entry screen, the
+on-screen keyboard, and most PII handling from the experience. Delivery sits behind the
+`DeliveryChannel` interface, so MMS can be added later without changing these screens.
 
 ## Screen Flow
 ```mermaid
@@ -10,17 +15,16 @@ flowchart LR
   B --> C[Location Select]
   C --> D[Pose Guide + Camera Preview]
   D --> E[Capture Review]
-  E --> F[Phone Entry + Delivery Consent]
-  F --> G[Generating]
-  G --> H[Send via Twilio MMS]
-  H --> I[Success]
+  E --> F[Generating]
+  F --> G[Ready: QR Handoff]
+  G --> H[Success / Reset]
+  H --> A
   D --> D1[Camera Error]
-  G --> G1[Generation Error]
-  H --> H1[SMS/MMS Send Error]
-  I --> A
+  F --> F1[Generation Error]
+  G --> G1[Delivery Error]
   D1 --> D
-  G1 --> C
-  H1 --> F
+  F1 --> C
+  G1 --> G
 ```
 
 ## Global Layout Rules
@@ -41,7 +45,7 @@ Goal: invite visitors and explain the value in one glance.
 |                                                                                |
 |                         [ Start Your Photo Experience ]                        |
 |                                                                                |
-|                 About 1 minute. Image delivered by text message.              |
+|                 About 1 minute. Scan a QR code to take it with you.           |
 |                                                                                |
 +--------------------------------------------------------------------------------+
 ```
@@ -59,8 +63,8 @@ Goal: capture clear consent and trust messaging.
 |--------------------------------------------------------------------------------|
 | We capture your photo to generate your personalized image.                     |
 | All image processing runs locally on this kiosk.                               |
-| Your phone number is used only to deliver your image by text message.          |
-| No automatic marketing enrollment.                                              |
+| We do not ask for your phone number, email, or any personal details.           |
+| Download your image by scanning a QR code; the link expires in 15 minutes.     |
 |                                                                                |
 | [ ] I agree to photo capture and image generation.                             |
 |                                                                                |
@@ -129,28 +133,7 @@ Goal: confirm the shot before processing.
 +--------------------------------------------------------------------------------+
 ```
 
-## 6) Phone Entry + Delivery Consent
-Goal: collect number for Twilio MMS delivery.
-
-```text
-+--------------------------------------------------------------------------------+
-| Send to Your Phone                                              [Staff Button] |
-|--------------------------------------------------------------------------------|
-| Enter your mobile number:                                                      |
-| [ +1 (___) ___-____ ]                                                          |
-|                                                                                |
-| [ ] I consent to receive this one-time image delivery text message.            |
-|                                                                                |
-| Delivery only. No automatic marketing enrollment.                              |
-|                                                                                |
-| [ Back ]                                                     [ Send My Photo ]  |
-+--------------------------------------------------------------------------------+
-```
-
-Validation:
-- Button disabled until valid E.164-compatible number and consent checked.
-
-## 7) Generating
+## 6) Generating
 Goal: reassure while local pipeline runs.
 
 ```text
@@ -167,36 +150,51 @@ Goal: reassure while local pipeline runs.
 +--------------------------------------------------------------------------------+
 ```
 
-## 8) Sending MMS
-Goal: show send status clearly.
+Notes:
+- Guided render is ~5-6s on a warm booth, so this screen is brief; avoid over-designing it.
+
+## 7) Ready: QR Handoff
+Goal: get the image onto the guest's phone with no data collection.
 
 ```text
 +--------------------------------------------------------------------------------+
-| Sending to Your Phone                                          [Staff Button]  |
+| Your Photo Is Ready                                           [Staff Button]   |
 |--------------------------------------------------------------------------------|
+|            [ Final image preview ]            +----------------------+         |
+|                                               |                      |         |
+|                                               |     [ QR CODE ]      |         |
+|            Scan to download to your phone.    |                      |         |
+|                                               +----------------------+         |
+|            Press and hold the image, then                                      |
+|            choose Add to Photos.              Link expires in 15 minutes.      |
 |                                                                                |
-|                Sending your photo via text message now...                     |
-|                                                                                |
-|                 [ status: queued / sent / delivered ]                         |
-|                                                                                |
+| [ Show Caption ]                                              [ I'm Done ]     |
 +--------------------------------------------------------------------------------+
 ```
 
-## 9) Success
+Notes:
+- Requires the guest's phone to reach the kiosk. Venue guest WiFi often blocks device-to-device
+  traffic (client isolation), and a phone on cellular cannot reach a LAN address at all. Verify
+  the venue network before the event; a kiosk-hosted hotspot is the fallback.
+- The caption with hashtags is offered with a copy button on the phone page, supporting the social
+  post without the kiosk needing to know anything about the guest.
+- Do not block the reset on the download: the guest may walk away and still fetch the image until
+  the link expires.
+
+## 8) Success / Reset
 Goal: close with delight and reset.
 
 ```text
 +--------------------------------------------------------------------------------+
-| Success!                                                      [Staff Button]   |
+| All Set!                                                      [Staff Button]   |
 |--------------------------------------------------------------------------------|
-|                                                                                |
-|                   Your photo has been sent to your phone.                     |
 |                                                                                |
 |                   Thanks for trying the Intel vPro experience!                |
 |                                                                                |
 |                     Returning to home screen in 10 seconds...                 |
 |                                                                                |
-|                   [ Done Now ]                                                |
+|                   [ Start Another ]                                            |
+|                                                                                |
 +--------------------------------------------------------------------------------+
 ```
 
@@ -210,9 +208,10 @@ Goal: close with delight and reset.
 - Message: We could not generate your image this time.
 - Actions: Retry Generation, Retake Photo, Choose Another Scene.
 
-## E3) MMS Send Error
-- Message: We could not send your message yet.
-- Actions: Retry Send, Re-enter Number.
+## E3) Delivery Error
+- Message: We could not prepare your download link.
+- Actions: Retry, Staff Override.
+- The image is already saved locally, so staff can hand it over another way.
 
 ## E4) Timeout Reset
 - Message: Session timed out. Returning to start.
@@ -221,11 +220,11 @@ Goal: close with delight and reset.
 ## Staff Controls (Hidden Panel)
 - Reinitialize camera
 - Reinitialize OpenVINO pipeline
-- Twilio connectivity/send test
+- Delivery self-test (serve a known image and show its QR)
 - View recent failed sessions
 - Force return to Idle
 
 ## Wireframe-to-Build Mapping
-- Attract, Consent, Select, Pose, Review, Phone, Generating, Sending, Success map 1:1 to frontend routes.
+- Attract, Consent, Select, Pose, Review, Generating, Ready, Success map 1:1 to frontend routes.
 - Error states map to overlay modals with actionable retry buttons.
 - All transitions should emit local telemetry events for completion-rate analysis.
