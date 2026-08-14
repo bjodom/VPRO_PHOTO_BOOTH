@@ -134,6 +134,44 @@ def build_parser() -> ArgumentParser:
         help="RMBG model directory containing model.xml and model.bin.",
     )
     parser.add_argument(
+        "--test-delivery",
+        action="store_true",
+        help="Serve one image over the local network and print a scannable QR code, then wait.",
+    )
+    parser.add_argument(
+        "--delivery-channel",
+        default="local-qr",
+        choices=["local-qr", "twilio", "none"],
+        help="Delivery channel used to hand the finished image to the guest.",
+    )
+    parser.add_argument(
+        "--delivery-image",
+        type=Path,
+        default=Path("outputs/social_final.jpg"),
+        help="Image to hand off in --test-delivery mode.",
+    )
+    parser.add_argument(
+        "--delivery-host",
+        default="0.0.0.0",
+        help="Interface the handoff server binds to; must be LAN-reachable for phones.",
+    )
+    parser.add_argument(
+        "--delivery-port",
+        type=int,
+        default=8765,
+        help="Handoff server port.",
+    )
+    parser.add_argument(
+        "--delivery-advertise-host",
+        default=None,
+        help="Address put in the QR code. Defaults to the detected LAN address.",
+    )
+    parser.add_argument(
+        "--delivery-caption",
+        default="Made at the Intel vPro Photo Booth #vPro #IntelAI",
+        help="Caption offered to the guest for their social post.",
+    )
+    parser.add_argument(
         "--npu",
         action="store_true",
         help=(
@@ -1128,6 +1166,60 @@ def _run_smoke_test(
     )
 
 
+def _run_delivery_test(args) -> None:
+    import sys
+
+    from .delivery import DeliveryRequest, build_delivery, render_qr_terminal
+
+    # The QR uses block characters that a default Windows console encoding cannot represent.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+
+    image_path = args.delivery_image.expanduser().resolve()
+    if not image_path.exists():
+        raise SystemExit(
+            f"Image not found: {image_path}. Pass --delivery-image with a rendered output."
+        )
+
+    kwargs: dict[str, object] = {}
+    if args.delivery_channel == "local-qr":
+        kwargs = {
+            "host": args.delivery_host,
+            "port": args.delivery_port,
+            "advertise_host": args.delivery_advertise_host,
+        }
+
+    channel = build_delivery(args.delivery_channel, **kwargs)
+    try:
+        result = channel.deliver(
+            DeliveryRequest(image_path=image_path, caption=args.delivery_caption)
+        )
+        if not result.ok:
+            raise SystemExit(f"Delivery failed on {result.channel}: {result.error}")
+
+        print(f"\nchannel: {result.channel}")
+        print(f"url:     {result.url}")
+        if result.expires_in_seconds:
+            print(f"expires: {result.expires_in_seconds / 60:.0f} min")
+        if result.url and args.delivery_channel == "local-qr":
+            print(render_qr_terminal(result.url))
+            print(
+                "Scan with a phone camera. If nothing loads, the phone likely cannot reach this\n"
+                "machine: guest WiFi often blocks device-to-device traffic (client isolation).\n"
+                "Try a phone on the same network first, then a hotspot.\n"
+                "Ctrl+C to stop."
+            )
+        try:
+            while True:
+                sleep(1)
+        except KeyboardInterrupt:
+            print("\nstopping handoff server")
+    finally:
+        channel.close()
+
+
 def _apply_npu_preference(parser: ArgumentParser, args) -> None:
     """Route the vision models to the NPU, leaving anything the caller set explicitly alone."""
     if not args.npu:
@@ -1150,6 +1242,10 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     _apply_npu_preference(parser, args)
+
+    if args.test_delivery:
+        _run_delivery_test(args)
+        return
 
     if args.test_juggernaut:
         _run_juggernaut_tests(args)

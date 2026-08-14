@@ -21,6 +21,9 @@ gen = [
 	"pillow>=10.0.0",
 	"transformers>=4.39.1,<5.0",
 ]
+kiosk = [
+	"segno>=1.6",
+]
 
 [project.scripts]
 vpro = "vpro.cli:main"
