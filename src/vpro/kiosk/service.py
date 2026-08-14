@@ -171,6 +171,7 @@ class KioskService:
             "qr_svg": session.data.delivery_qr_svg,
             "caption": session.data.caption,
             "has_final_image": session.data.final_path is not None,
+            "framing": self._framing_snapshot(),
             "scenes": [
                 {"key": s.key, "label": s.label, "description": s.description} for s in SCENES
             ],
@@ -182,6 +183,17 @@ class KioskService:
                 "startup_seconds": self.status.startup_seconds,
                 "last_error": self.status.last_error,
             },
+        }
+
+    def _framing_snapshot(self) -> dict[str, Any]:
+        if self.camera is None or not hasattr(self.camera, "framing"):
+            return {"ok": True, "status": "unknown", "message": ""}
+        framing = self.camera.framing
+        return {
+            "ok": framing.ok,
+            "status": framing.status,
+            "message": framing.message,
+            "height_ratio": round(framing.height_ratio, 3),
         }
 
     # -- guest actions -------------------------------------------------------------
