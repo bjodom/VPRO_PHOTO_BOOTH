@@ -134,6 +134,15 @@ def build_parser() -> ArgumentParser:
         help="RMBG model directory containing model.xml and model.bin.",
     )
     parser.add_argument(
+        "--npu",
+        action="store_true",
+        help=(
+            "Run the vision models (YOLO pose, RMBG) on the Intel NPU instead of the GPU. "
+            "Juggernaut stays on the GPU; SDXL is not a practical NPU workload. "
+            "Explicit --device / --rmbg-device values still win."
+        ),
+    )
+    parser.add_argument(
         "--rmbg-device",
         default="AUTO",
         help="Device name used for RMBG validation warmup.",
@@ -1119,8 +1128,28 @@ def _run_smoke_test(
     )
 
 
+def _apply_npu_preference(parser: ArgumentParser, args) -> None:
+    """Route the vision models to the NPU, leaving anything the caller set explicitly alone."""
+    if not args.npu:
+        return
+
+    import openvino
+
+    available = openvino.Core().available_devices
+    if "NPU" not in available:
+        raise SystemExit(f"--npu requested but no NPU device found. Available: {available}")
+
+    if args.device == parser.get_default("device"):
+        args.device = "intel:npu"
+    if args.rmbg_device == parser.get_default("rmbg_device"):
+        args.rmbg_device = "NPU"
+    print(f"NPU mode: yolo={args.device}, rmbg={args.rmbg_device}, juggernaut={args.juggernaut_device}")
+
+
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    _apply_npu_preference(parser, args)
 
     if args.test_juggernaut:
         _run_juggernaut_tests(args)
