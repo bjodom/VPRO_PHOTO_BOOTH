@@ -171,12 +171,25 @@ Run both test stages (single pipeline load):
 uv run vpro --test-juggernaut --juggernaut-model-id OpenVINO/Juggernaut-XL-v9-fp16-ov --juggernaut-guided-input-image outputs/final_portrait_1080x1350_lenovo_test.jpg
 ```
 
+The standalone prompt test stores reusable compiled OpenVINO artifacts in `outputs/openvino_cache/juggernaut` by default. This cache survives normal process exits and avoids rebuilding GPU kernels when the model, target device or driver, OpenVINO version, and compilation-relevant shapes/settings are unchanged. Optimum still reloads the multi-gigabyte SDXL OpenVINO model files in each new Python process, so use a long-lived application process when low latency across separate requests matters. Override the cache location with `--openvino-cache-dir PATH`.
+
 By default this allows first-run download and then reuses the local Hugging Face cache on subsequent runs. For offline/cache-only mode, add `--juggernaut-local-only`.
 
 Juggernaut presets:
 - `identity-lock`: stronger identity retention (lower guided strength)
 - `balanced`: default profile for kiosk testing
 - `stylized`: more creative/stylized output with higher drift risk
+
+Text-to-image prompt-test presets:
+
+| Preset | Steps | CFG (`guidance_scale`) |
+|---|---:|---:|
+| `fast` | 16 | 3.5 |
+| `balanced` | 24 | 4.5 |
+| `quality` | 36 | 5.5 |
+| `stylized` | 30 | 6.0 |
+
+CFG means classifier-free guidance: it controls how strongly the image follows the prompt. Lower values allow more natural variation; higher values follow the prompt more strictly but can look harsher or oversaturated.
 
 Preset flag:
 
@@ -190,6 +203,7 @@ Default outputs:
 
 Useful flags:
 - `--juggernaut-device GPU`
+- `--juggernaut-openvino-cache-dir outputs/openvino_cache/juggernaut` (persistent compiled-model cache)
 - `--juggernaut-preset balanced`
 - `--juggernaut-steps 24` (manual override)
 - `--juggernaut-width 1080 --juggernaut-height 1350`
