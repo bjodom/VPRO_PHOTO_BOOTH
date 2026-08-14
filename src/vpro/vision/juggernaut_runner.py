@@ -82,6 +82,7 @@ class JuggernautRunner:
         self._lock = threading.Lock()
         self._ready = threading.Event()
         self._pipeline: Any = None
+        self._warmup_dir: Path | None = None
 
         self._state = STATE_IDLE
         self._error: str | None = None
@@ -157,6 +158,15 @@ class JuggernautRunner:
     def render(self, request: RenderRequest, timeout: float | None = None) -> RenderResult:
         """Submit and wait. Convenience for callers that have nothing else to do."""
         return self.submit(request).result(timeout)
+
+    def submit_warmup(self) -> Future[RenderResult]:
+        """Queue the warmup as a normal request.
+
+        Diffusion inference starves a concurrent YOLO preview (measured: 30 fps -> 8 fps, one
+        580ms frame), while loading and compiling do not. Callers showing a live preview should
+        construct with warmup=False and call this once the camera is done.
+        """
+        return self.submit(self._warmup_request())
 
     # -- status --------------------------------------------------------------------
 
@@ -244,7 +254,16 @@ class JuggernautRunner:
             )
 
         self._pipeline = None
+        self._cleanup_warmup_dir()
         self._state = STATE_STOPPED
+
+    def _cleanup_warmup_dir(self) -> None:
+        if self._warmup_dir is None:
+            return
+        import shutil
+
+        shutil.rmtree(self._warmup_dir, ignore_errors=True)
+        self._warmup_dir = None
 
     def _execute(self, request: RenderRequest) -> Path:
         if request.mode == TASK_IMG2IMG:
@@ -276,42 +295,46 @@ class JuggernautRunner:
             attempts=self._attempts,
         )
 
-    def _run_warmup(self) -> None:
-        """Absorb first-render cost at boot so no guest pays it.
+    def _warmup_request(self) -> RenderRequest:
+        """Build a cheap render at production resolution.
 
-        Must run at production resolution: a 512x512 warmup left a 1080x1350 first render 2x
-        slower than the second, because the shape-specific setup had not been paid.
+        The size must match real output: a 512x512 warmup left the first 1080x1350 render twice as
+        slow as the second, because the shape-specific setup had not been paid.
         """
         import tempfile
 
         from PIL import Image
 
         width, height = self._warmup_size
-        with tempfile.TemporaryDirectory(prefix="vpro-warmup-") as tmp:
-            tmp_dir = Path(tmp)
-            output_path = tmp_dir / "warmup.jpg"
-            common = {
-                "pipeline": self._pipeline,
-                "output_path": output_path,
-                "prompt": "warmup",
-                "negative_prompt": None,
-                "steps": 2,
-                "guidance_scale": 1.0,
-                "width": width,
-                "height": height,
-                "seed": 0,
-                "attempts": 1,
-            }
-            try:
-                if self.task == TASK_IMG2IMG:
-                    guide_path = tmp_dir / "guide.jpg"
-                    Image.new("RGB", (width, height), (127, 127, 127)).save(guide_path)
-                    render_img2img(input_image_path=guide_path, strength=0.5, **common)
-                else:
-                    render_text2img(**common)
-            except Exception as exc:
-                # A failed warmup must not stop the runner from serving real requests.
-                print(f"Juggernaut warmup render failed (continuing): {exc}", flush=True)
+        if self._warmup_dir is None:
+            self._warmup_dir = Path(tempfile.mkdtemp(prefix="vpro-warmup-"))
+
+        guide_path: Path | None = None
+        if self.task == TASK_IMG2IMG:
+            guide_path = self._warmup_dir / "guide.jpg"
+            if not guide_path.exists():
+                Image.new("RGB", (width, height), (127, 127, 127)).save(guide_path)
+
+        return RenderRequest(
+            mode=self.task,
+            prompt="warmup",
+            output_path=self._warmup_dir / "warmup.jpg",
+            steps=2,
+            guidance_scale=1.0,
+            width=width,
+            height=height,
+            seed=0,
+            strength=0.5 if self.task == TASK_IMG2IMG else None,
+            input_image_path=guide_path,
+        )
+
+    def _run_warmup(self) -> None:
+        """Absorb first-render cost at boot so no guest pays it."""
+        try:
+            self._execute(self._warmup_request())
+        except Exception as exc:
+            # A failed warmup must not stop the runner from serving real requests.
+            print(f"Juggernaut warmup render failed (continuing): {exc}", flush=True)
 
     def _drain_pending(self) -> None:
         while True:
