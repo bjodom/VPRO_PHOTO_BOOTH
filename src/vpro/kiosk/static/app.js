@@ -75,6 +75,15 @@ function render(snapshot) {
     el.textContent = snapshot.error || "Something went wrong.";
   });
 
+  const framing = snapshot.framing || { ok: true, message: "" };
+  const hint = document.getElementById("framing-hint");
+  hint.textContent = framing.message;
+  hint.classList.toggle("good", !!framing.ok);
+  // Advisory, not a gate: a guest who cannot reach a green box must still be able to continue.
+  document.getElementById("capture-btn").textContent = framing.ok
+    ? "Take Photo"
+    : "Take Photo Anyway";
+
   if (changed) {
     applyStateAssets(snapshot);
   }

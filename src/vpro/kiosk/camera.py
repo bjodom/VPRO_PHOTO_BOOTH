@@ -14,7 +14,11 @@ from typing import Any
 
 import numpy as np
 
+from .framing import FramingFeedback, evaluate_framing, target_box
+
 JPEG_QUALITY = 80
+GUIDE_OK = (120, 220, 120)
+GUIDE_BAD = (120, 170, 245)
 
 
 @dataclass
@@ -47,6 +51,8 @@ class CameraStream:
         self.jpeg_quality = jpeg_quality
 
         self.stats = CameraStats()
+        self.framing: FramingFeedback = evaluate_framing(None, 0, 0)
+        self.show_guide = True
         self._capture: Any = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -176,6 +182,99 @@ class CameraStream:
             self.stats.last_error = f"pose overlay failed: {exc}"
             return frame
         self.stats.inference_seconds = perf_counter() - start
+
+        display = frame
+        bbox = None
+        has_lower_body: bool | None = None
         if isinstance(results, list) and results:
-            return results[0].plot()
-        return frame
+            display = results[0].plot()
+            bbox, index = _largest_person_bbox(results[0])
+            if index is not None:
+                has_lower_body = _has_lower_body(results[0], index)
+
+        height, width = frame.shape[:2]
+        self.framing = evaluate_framing(bbox, width, height, has_lower_body)
+        if self.show_guide:
+            display = self._draw_guide(display, bbox)
+        return display
+
+    def _draw_guide(self, frame: np.ndarray, bbox: tuple[int, int, int, int] | None) -> np.ndarray:
+        import cv2
+
+        out = frame if frame.flags.writeable else frame.copy()
+        height, width = out.shape[:2]
+        box = target_box(width, height)
+        colour = GUIDE_OK if self.framing.ok else GUIDE_BAD
+
+        # Dashed rectangle so it reads as a guide rather than a detection.
+        x1, y1, x2, y2 = box.as_tuple
+        dash = 26
+        for x in range(x1, x2, dash * 2):
+            cv2.line(out, (x, y1), (min(x + dash, x2), y1), colour, 3)
+            cv2.line(out, (x, y2), (min(x + dash, x2), y2), colour, 3)
+        for y in range(y1, y2, dash * 2):
+            cv2.line(out, (x1, y), (x1, min(y + dash, y2)), colour, 3)
+            cv2.line(out, (x2, y), (x2, min(y + dash, y2)), colour, 3)
+
+        text = self.framing.message
+        scale = max(0.8, width / 1400.0)
+        thickness = max(2, int(scale * 2))
+        (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+        tx = int((width - tw) / 2)
+        ty = int(height * 0.10)
+        cv2.rectangle(
+            out,
+            (tx - 18, ty - th - 16),
+            (tx + tw + 18, ty + baseline + 12),
+            (18, 22, 34),
+            -1,
+        )
+        cv2.putText(
+            out, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thickness, cv2.LINE_AA
+        )
+        return out
+
+
+def _largest_person_bbox(result: Any) -> tuple[tuple[int, int, int, int] | None, int | None]:
+    """Biggest detection, which is the guest standing closest to the booth."""
+    boxes = getattr(result, "boxes", None)
+    xyxy = getattr(boxes, "xyxy", None) if boxes is not None else None
+    if xyxy is None or len(xyxy) == 0:
+        return None, None
+
+    best = None
+    best_index = None
+    best_area = 0.0
+    for index, row in enumerate(xyxy):
+        values = row.tolist() if hasattr(row, "tolist") else list(row)
+        x1, y1, x2, y2 = (int(v) for v in values[:4])
+        area = max(0, x2 - x1) * max(0, y2 - y1)
+        if area > best_area:
+            best_area = area
+            best = (x1, y1, x2, y2)
+            best_index = index
+    return best, best_index
+
+
+#: COCO pose indices for knees and ankles.
+LOWER_BODY_KEYPOINTS = (13, 14, 15, 16)
+KEYPOINT_CONFIDENCE = 0.5
+
+
+def _has_lower_body(result: Any, index: int) -> bool | None:
+    """True when knees or ankles are visible, so the subject is not cut off at the waist."""
+    keypoints = getattr(result, "keypoints", None)
+    data = getattr(keypoints, "data", None) if keypoints is not None else None
+    if data is None or len(data) <= index:
+        return None
+
+    person = data[index]
+    person = person.tolist() if hasattr(person, "tolist") else person
+    if len(person) <= max(LOWER_BODY_KEYPOINTS):
+        return None
+
+    for keypoint_index in LOWER_BODY_KEYPOINTS:
+        point = person[keypoint_index]
+        if len(point) >= 3 and float(point[2]) >= KEYPOINT_CONFIDENCE:
+            return True
+    return False

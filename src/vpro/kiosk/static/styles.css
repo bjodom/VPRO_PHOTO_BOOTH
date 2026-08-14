@@ -139,6 +139,17 @@ button:disabled { opacity: .45; cursor: default; }
 
 .screen.error h2 { color: var(--danger); }
 
+.framing {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+  padding: 10px 20px;
+  border-radius: 10px;
+  background: #2a1f1f;
+  color: #f5c78a;
+}
+.framing.good { background: #16301f; color: #8fe0a6; }
+
 #staff-panel {
   position: fixed;
   inset: auto 16px 16px auto;
