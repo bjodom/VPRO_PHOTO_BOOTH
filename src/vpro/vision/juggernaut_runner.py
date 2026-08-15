@@ -22,9 +22,17 @@ from .juggernaut_runtime import (
     DEFAULT_RENDER_ATTEMPTS,
     load_juggernaut_pipeline,
     render_img2img,
+    render_inpaint,
     render_text2img,
 )
-from .juggernaut_types import TASK_IMG2IMG, TASK_TEXT2IMG, RenderRequest, RenderResult
+from .juggernaut_types import (
+    TASK_IMG2IMG,
+    TASK_INPAINT,
+    TASK_TEXT2IMG,
+    TASKS,
+    RenderRequest,
+    RenderResult,
+)
 
 STATE_IDLE = "idle"
 STATE_LOADING = "loading"
@@ -65,8 +73,8 @@ class JuggernautRunner:
         warmup_height: int = 1350,
         attempts: int = DEFAULT_RENDER_ATTEMPTS,
     ) -> None:
-        if task not in (TASK_TEXT2IMG, TASK_IMG2IMG):
-            raise ValueError(f"task must be '{TASK_TEXT2IMG}' or '{TASK_IMG2IMG}', got {task!r}")
+        if task not in TASKS:
+            raise ValueError(f"task must be one of {TASKS}, got {task!r}")
 
         self.model_id = model_id
         self.device = device
@@ -266,6 +274,24 @@ class JuggernautRunner:
         self._warmup_dir = None
 
     def _execute(self, request: RenderRequest) -> Path:
+        if request.mode == TASK_INPAINT:
+            assert request.input_image_path is not None and request.mask_image_path is not None
+            assert request.strength is not None
+            return render_inpaint(
+                pipeline=self._pipeline,
+                input_image_path=request.input_image_path,
+                mask_image_path=request.mask_image_path,
+                output_path=request.output_path,
+                prompt=request.prompt,
+                negative_prompt=request.negative_prompt,
+                steps=request.steps,
+                guidance_scale=request.guidance_scale,
+                strength=request.strength,
+                width=request.width,
+                height=request.height,
+                seed=request.seed,
+                attempts=self._attempts,
+            )
         if request.mode == TASK_IMG2IMG:
             assert request.input_image_path is not None and request.strength is not None
             return render_img2img(
@@ -310,10 +336,15 @@ class JuggernautRunner:
             self._warmup_dir = Path(tempfile.mkdtemp(prefix="vpro-warmup-"))
 
         guide_path: Path | None = None
-        if self.task == TASK_IMG2IMG:
+        mask_path: Path | None = None
+        if self.task in (TASK_IMG2IMG, TASK_INPAINT):
             guide_path = self._warmup_dir / "guide.jpg"
             if not guide_path.exists():
                 Image.new("RGB", (width, height), (127, 127, 127)).save(guide_path)
+        if self.task == TASK_INPAINT:
+            mask_path = self._warmup_dir / "mask.png"
+            if not mask_path.exists():
+                Image.new("L", (width, height), 255).save(mask_path)
 
         return RenderRequest(
             mode=self.task,
@@ -324,8 +355,9 @@ class JuggernautRunner:
             width=width,
             height=height,
             seed=0,
-            strength=0.5 if self.task == TASK_IMG2IMG else None,
+            strength=0.5 if self.task in (TASK_IMG2IMG, TASK_INPAINT) else None,
             input_image_path=guide_path,
+            mask_image_path=mask_path,
         )
 
     def _run_warmup(self) -> None:

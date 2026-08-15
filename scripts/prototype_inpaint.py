@@ -61,17 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--feather", type=int, default=8, help="Mask feather radius in pixels.")
     parser.add_argument(
-        "--expand",
+        "--erode",
         type=int,
-        default=-6,
-        help="Dilate (positive) or erode (negative) the lock. Negative discards matte edge pixels "
-        "contaminated by the backdrop colour, which is what causes a halo.",
+        default=2,
+        help="Shrink the lock before feathering, as insurance against matte fringe.",
     )
     parser.add_argument(
-        "--neutral-canvas",
-        action="store_true",
-        help="Composite onto flat grey instead of a pre-generated background. Grey bleeds into "
-        "semi-transparent hair and shows up as a halo.",
+        "--opaque-threshold",
+        type=int,
+        default=250,
+        help="Alpha at or above this is locked. Anything less is a blended edge pixel carrying "
+        "the backdrop colour, so it must be regenerated rather than preserved.",
     )
     parser.add_argument(
         "--subject-prompt",
@@ -120,14 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     clean = cleanup_mask_for_primary_subject(raw_mask, primary.bbox_xyxy, quality="high")
     foreground[:, :, 3] = clean
 
-    # Compositing over a plausible background keeps matte edges from picking up a flat colour.
-    canvas_path = None if args.neutral_canvas else scene.pick_background(REPO_ROOT / "assets" / "scenes")
-    if canvas_path is None:
-        canvas_path = OUT / "neutral.png"
-        cv2.imwrite(str(canvas_path), np.full((1350, 1080, 3), 128, dtype=np.uint8))
-        print("canvas:  neutral grey (no pre-generated background for this scene)")
-    else:
-        print(f"canvas:  {canvas_path.name}")
+    # Everything outside the guest is generated, so the canvas only needs to be neutral.
+    canvas_path = OUT / "neutral.png"
+    cv2.imwrite(str(canvas_path), np.full((1350, 1080, 3), 128, dtype=np.uint8))
 
     composition = compose_portrait(
         source_bgr=source,
@@ -149,13 +144,18 @@ def main(argv: list[str] | None = None) -> int:
     if coverage is None:
         raise SystemExit("Compositor did not return a coverage mask.")
 
-    locked = feather_mask(coverage, feather_px=args.feather, expand_px=args.expand)
-    # diffusers repaints white, so invert: keep the guest, generate the rest.
+    # Only fully opaque pixels are safe to preserve: a partially transparent pixel was blended
+    # with the canvas behind it, so keeping it bakes that colour into the final image as a halo.
+    opaque = ((coverage >= args.opaque_threshold).astype(np.uint8)) * 255
+    locked = feather_mask(opaque, feather_px=args.feather, expand_px=-abs(args.erode))
     inpaint_mask = 255 - locked
     mask_path = OUT / "mask.png"
     cv2.imwrite(str(mask_path), inpaint_mask)
     cv2.imwrite(str(OUT / "coverage.png"), coverage)
-    print(f"mask:    feather={args.feather}px expand={args.expand}px -> {mask_path.name}")
+    print(
+        f"mask:    opaque>={args.opaque_threshold} erode={args.erode}px "
+        f"feather={args.feather}px -> {mask_path.name}"
+    )
 
     pipeline = load_juggernaut_pipeline(
         model_id="OpenVINO/Juggernaut-XL-v9-fp16-ov",

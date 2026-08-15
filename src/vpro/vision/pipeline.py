@@ -32,6 +32,7 @@ def compose_portrait_from_image(
     output_image_path: Path,
     mask_quality: str,
     verbose: bool = True,
+    coverage_output_path: Path | None = None,
 ) -> Path:
     import cv2
 
@@ -96,6 +97,9 @@ def compose_portrait_from_image(
     )
 
     saved_path = save_composed_image(composed.image_bgr, output_image_path)
+    if coverage_output_path is not None and composed.coverage_mask is not None:
+        coverage_output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(coverage_output_path), composed.coverage_mask)
     if verbose:
         anchor = composed.anchor_xy
         anchor_text = "none" if anchor is None else f"{anchor[0]},{anchor[1]}"

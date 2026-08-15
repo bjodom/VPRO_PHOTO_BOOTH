@@ -6,12 +6,7 @@ composed portrait.
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
-from pathlib import Path
-
-#: Pre-generated landmark backgrounds, one directory per scene key.
-BACKGROUND_ROOT = Path("assets/scenes")
 
 PHOTOREAL_STYLE = (
     "photorealistic travel photograph, shot on Canon EOS R5, 35mm lens, f/8, "
@@ -25,6 +20,12 @@ DEFAULT_NEGATIVE_PROMPT = (
     "warped architecture, watermark, text, signature, logo, deformed, extra limbs"
 )
 
+#: The guest is masked out, so any mention of people gets painted into the background.
+BACKGROUND_NEGATIVE_PROMPT = (
+    f"{DEFAULT_NEGATIVE_PROMPT}, another person, second person, people, crowd, faces, "
+    "tourists, mannequin, indoor, table, desk, furniture, railing"
+)
+
 
 @dataclass(frozen=True)
 class Scene:
@@ -36,22 +37,9 @@ class Scene:
         return f"a person holding a laptop in front of {self.description}, {PHOTOREAL_STYLE}"
 
     def background_prompt(self) -> str:
-        """Empty-scene prompt: the guest is composited in afterwards, not generated."""
+        """Scene without people: the guest is preserved by the mask, so describing a person here
+        makes the model paint a second one into the background."""
         return f"{self.description}, no people, empty scene, {PHOTOREAL_STYLE}"
-
-    def background_dir(self, root: Path = BACKGROUND_ROOT) -> Path:
-        return root / self.key
-
-    def backgrounds(self, root: Path = BACKGROUND_ROOT) -> list[Path]:
-        directory = self.background_dir(root)
-        if not directory.is_dir():
-            return []
-        return sorted(p for p in directory.iterdir() if p.suffix.lower() in {".jpg", ".png"})
-
-    def pick_background(self, root: Path = BACKGROUND_ROOT) -> Path | None:
-        """Random variant so consecutive guests at the same destination differ."""
-        options = self.backgrounds(root)
-        return random.choice(options) if options else None
 
 
 SCENES: tuple[Scene, ...] = (
