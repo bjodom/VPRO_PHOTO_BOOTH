@@ -29,6 +29,8 @@ class KioskConfig:
     camera_index: int = 0
     capture_width: int = 1920
     capture_height: int = 1080
+    #: Clockwise correction for a camera mounted on its side; 90 or 270 gives a portrait frame.
+    capture_rotate: int = 0
 
     yolo_model_path: Path = Path("models/yolo26/yolo26x-pose_openvino_model")
     yolo_device: str = "intel:gpu"
@@ -98,6 +100,7 @@ class KioskService:
             height=self.config.capture_height,
             pose_backend=self._backend,
             pose_device=self.config.yolo_device,
+            rotate=self.config.capture_rotate,
         ).start()
 
         self.delivery = build_delivery(
