@@ -195,7 +195,9 @@ class CameraStream:
         bbox = None
         has_lower_body: bool | None = None
         if isinstance(results, list) and results:
-            display = results[0].plot()
+            # No class labels: they are drawn before the mirror flip, so they render backwards,
+            # and "person 0.96" means nothing to a guest anyway.
+            display = results[0].plot(labels=False, conf=False)
             bbox, index = _largest_person_bbox(results[0])
             if index is not None:
                 has_lower_body = _has_lower_body(results[0], index)
