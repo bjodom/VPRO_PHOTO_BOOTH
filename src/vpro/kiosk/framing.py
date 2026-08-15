@@ -117,7 +117,10 @@ def evaluate_framing(
             STATUS_TOO_FAR, "Step closer", False, height_ratio, centre_offset
         )
     if abs(centre_offset) > MAX_CENTRE_OFFSET:
-        direction = "right" if centre_offset < 0 else "left"
+        # The camera faces the guest, so their right appears on the image's left, exactly as when
+        # facing another person. A subject left of centre is standing to their own right and must
+        # move to their own left to centre up.
+        direction = "left" if centre_offset < 0 else "right"
         return FramingFeedback(
             STATUS_OFF_CENTRE, f"Move {direction}", False, height_ratio, centre_offset
         )

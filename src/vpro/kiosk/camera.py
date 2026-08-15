@@ -41,6 +41,7 @@ class CameraStream:
         pose_device: str = "intel:gpu",
         annotate: bool = True,
         jpeg_quality: int = JPEG_QUALITY,
+        mirror_preview: bool = True,
     ) -> None:
         self.index = index
         self.width = width
@@ -49,6 +50,7 @@ class CameraStream:
         self.pose_device = pose_device
         self.annotate = annotate
         self.jpeg_quality = jpeg_quality
+        self.mirror_preview = mirror_preview
 
         self.stats = CameraStats()
         self.framing: FramingFeedback = evaluate_framing(None, 0, 0)
@@ -94,7 +96,11 @@ class CameraStream:
     # -- readers -------------------------------------------------------------------
 
     def latest_frame(self) -> np.ndarray | None:
-        """Most recent raw BGR frame, copied so callers cannot mutate the buffer."""
+        """Most recent raw BGR frame, copied so callers cannot mutate the buffer.
+
+        Deliberately unmirrored: the preview is flipped so guests can adjust naturally, but the
+        delivered photo should not be, or any text on their clothing comes out reversed.
+        """
         with self._lock:
             return None if self._frame is None else self._frame.copy()
 
@@ -150,6 +156,8 @@ class CameraStream:
                 display = frame
                 if self.annotate and self.pose_backend is not None:
                     display = self._annotate(frame)
+                elif self.mirror_preview:
+                    display = cv2.flip(frame, 1)
 
                 encoded = cv2.imencode(
                     ".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
@@ -194,6 +202,12 @@ class CameraStream:
 
         height, width = frame.shape[:2]
         self.framing = evaluate_framing(bbox, width, height, has_lower_body)
+
+        if self.mirror_preview:
+            import cv2
+
+            # Flip before the overlay so guide text is not drawn backwards.
+            display = cv2.flip(display, 1)
         if self.show_guide:
             display = self._draw_guide(display, bbox)
         return display

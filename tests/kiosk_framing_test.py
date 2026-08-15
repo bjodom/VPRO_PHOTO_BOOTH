@@ -76,12 +76,21 @@ def test_cropped_head_takes_priority() -> None:
 
 
 def test_off_centre_direction() -> None:
-    left = evaluate_framing(centred(0.72, offset=-0.25), W, H)
-    check("off centre rejected", left.status == STATUS_OFF_CENTRE, left.status)
-    check("subject left of centre moves right", "right" in left.message.lower(), left.message)
+    """The camera faces the guest, so image-left is the guest's own right."""
+    on_image_left = evaluate_framing(centred(0.72, offset=-0.25), W, H)
+    check("off centre rejected", on_image_left.status == STATUS_OFF_CENTRE, on_image_left.status)
+    check(
+        "subject on image left moves to their left",
+        "left" in on_image_left.message.lower(),
+        on_image_left.message,
+    )
 
-    right = evaluate_framing(centred(0.72, offset=0.25), W, H)
-    check("subject right of centre moves left", "left" in right.message.lower(), right.message)
+    on_image_right = evaluate_framing(centred(0.72, offset=0.25), W, H)
+    check(
+        "subject on image right moves to their right",
+        "right" in on_image_right.message.lower(),
+        on_image_right.message,
+    )
 
 
 def test_small_offset_is_tolerated() -> None:
