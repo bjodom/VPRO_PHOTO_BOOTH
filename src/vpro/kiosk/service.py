@@ -17,7 +17,7 @@ from typing import Any
 from ..delivery import DeliveryRequest, build_delivery
 from ..vision.juggernaut_types import RenderRequest
 from .camera import CameraStream
-from .scenes import DEFAULT_NEGATIVE_PROMPT, SCENES, get_scene
+from .scenes import BACKGROUND_NEGATIVE_PROMPT, SCENES, get_scene
 from .session import KioskSession, State
 
 CAPTION = "Made at the Intel vPro Photo Booth #vPro #IntelAI"
@@ -44,11 +44,17 @@ class KioskConfig:
     juggernaut_model_id: str = "OpenVINO/Juggernaut-XL-v9-fp16-ov"
     juggernaut_device: str = "GPU"
     juggernaut_cache_dir: Path = Path("outputs/openvino_cache/juggernaut")
-    steps: int = 28
-    guidance_scale: float = 4.2
-    strength: float = 0.16
+    steps: int = 30
+    guidance_scale: float = 5.0
+    #: Near 1.0: the masked region is generated outright, not nudged.
+    strength: float = 0.99
     width: int = 1080
     height: int = 1350
+    #: Alpha at or above this is preserved. Lower values are blended edge pixels carrying the
+    #: backdrop colour, so keeping them bakes a halo into the result.
+    opaque_threshold: int = 250
+    mask_erode_px: int = 2
+    mask_feather_px: int = 8
 
     delivery_channel: str = "local-qr"
     delivery_host: str = "0.0.0.0"
@@ -125,7 +131,7 @@ class KioskService:
                 model_id=self.config.juggernaut_model_id,
                 device=self.config.juggernaut_device,
                 openvino_cache_dir=self.config.juggernaut_cache_dir,
-                task="img2img",
+                task="inpaint",
                 warmup=False,
                 warmup_width=self.config.width,
                 warmup_height=self.config.height,
@@ -303,6 +309,10 @@ class KioskService:
         )
 
     def _produce(self, session_id: int) -> tuple[Path | None, Any]:
+        import cv2
+        import numpy as np
+
+        from ..vision.juggernaut_runtime import feather_mask
         from ..vision.pipeline import compose_portrait_from_image
 
         config = self.config
@@ -314,13 +324,15 @@ class KioskService:
         scene = get_scene(scene_key)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         composed_path = config.output_dir / f"composed_{stamp}.jpg"
+        coverage_path = config.output_dir / f"coverage_{stamp}.png"
 
-        background = scene.pick_background()
-        if background is None:
-            # Falls back to the studio backdrop; at strength 0.16 the render cannot invent a
-            # landmark, so run scripts/generate_scene_backgrounds.py to make destinations appear.
-            print(f"[kiosk] no background for {scene.key}; using {config.scene_image}")
-            background = config.scene_image
+        # The destination is generated around the guest, so the backdrop only has to be neutral.
+        canvas_path = config.output_dir / "neutral_canvas.png"
+        if not canvas_path.exists():
+            cv2.imwrite(
+                str(canvas_path),
+                np.full((config.height, config.width, 3), 128, dtype=np.uint8),
+            )
 
         started = perf_counter()
         composed = compose_portrait_from_image(
@@ -329,11 +341,12 @@ class KioskService:
             rmbg_model_dir=config.rmbg_model_dir,
             rmbg_device=config.rmbg_device,
             yolo_device=config.yolo_device,
-            scene_image_path=background,
+            scene_image_path=canvas_path,
             prop_image_path=config.prop_image,
             output_image_path=composed_path,
             mask_quality=config.mask_quality,
             verbose=False,
+            coverage_output_path=coverage_path,
         )
         print(f"[kiosk] compose {perf_counter() - started:.2f}s -> {composed}")
 
@@ -342,13 +355,14 @@ class KioskService:
 
         final_path = composed
         if self.runner is not None:
+            mask_path = self._build_inpaint_mask(coverage_path, stamp)
             render_path = config.output_dir / f"final_{stamp}.jpg"
             started = perf_counter()
             result = self.runner.render(
                 RenderRequest(
-                    mode="img2img",
-                    prompt=scene.prompt(),
-                    negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+                    mode="inpaint",
+                    prompt=scene.background_prompt(),
+                    negative_prompt=BACKGROUND_NEGATIVE_PROMPT,
                     output_path=render_path,
                     steps=config.steps,
                     guidance_scale=config.guidance_scale,
@@ -356,6 +370,7 @@ class KioskService:
                     width=config.width,
                     height=config.height,
                     input_image_path=composed,
+                    mask_image_path=mask_path,
                 )
             )
             print(f"[kiosk] render {perf_counter() - started:.2f}s ok={result.ok}")
@@ -373,6 +388,31 @@ class KioskService:
             DeliveryRequest(image_path=final_path, caption=CAPTION)
         )
         return final_path, delivery
+
+    def _build_inpaint_mask(self, coverage_path: Path, stamp: str) -> Path:
+        """White is repainted, so invert the guest's opaque coverage.
+
+        Only fully opaque pixels are preserved. A partially transparent pixel was blended with the
+        canvas behind it, so keeping it bakes that colour in as a halo around hair.
+        """
+        import cv2
+        import numpy as np
+
+        from ..vision.juggernaut_runtime import feather_mask
+
+        coverage = cv2.imread(str(coverage_path), cv2.IMREAD_GRAYSCALE)
+        if coverage is None:
+            raise RuntimeError(f"Could not read coverage mask: {coverage_path}")
+
+        opaque = ((coverage >= self.config.opaque_threshold).astype(np.uint8)) * 255
+        locked = feather_mask(
+            opaque,
+            feather_px=self.config.mask_feather_px,
+            expand_px=-abs(self.config.mask_erode_px),
+        )
+        mask_path = self.config.output_dir / f"mask_{stamp}.png"
+        cv2.imwrite(str(mask_path), 255 - locked)
+        return mask_path
 
     def _abandoned(self, session_id: int) -> bool:
         """True once the guest's session has been replaced, so results must be discarded."""

@@ -11,6 +11,8 @@ from pathlib import Path
 
 TASK_TEXT2IMG = "text2img"
 TASK_IMG2IMG = "img2img"
+TASK_INPAINT = "inpaint"
+TASKS = (TASK_TEXT2IMG, TASK_IMG2IMG, TASK_INPAINT)
 
 # Bounds exist so a bad UI value cannot wedge the booth on a multi-minute render.
 MAX_STEPS = 150
@@ -32,11 +34,12 @@ class RenderRequest:
     seed: int | None = None
     strength: float | None = None
     input_image_path: Path | None = None
+    mask_image_path: Path | None = None
 
     def validated(self) -> RenderRequest:
         """Return a normalized copy, raising ValueError on anything out of bounds."""
-        if self.mode not in (TASK_TEXT2IMG, TASK_IMG2IMG):
-            raise ValueError(f"mode must be '{TASK_TEXT2IMG}' or '{TASK_IMG2IMG}', got {self.mode!r}")
+        if self.mode not in TASKS:
+            raise ValueError(f"mode must be one of {TASKS}, got {self.mode!r}")
         if not self.prompt or not self.prompt.strip():
             raise ValueError("prompt must be a non-empty string")
         if len(self.prompt) > MAX_PROMPT_CHARS:
@@ -50,13 +53,15 @@ class RenderRequest:
                 raise ValueError(
                     f"{name} must be within {MIN_DIMENSION}..{MAX_DIMENSION}, got {value}"
                 )
-        if self.mode == TASK_IMG2IMG:
+        if self.mode in (TASK_IMG2IMG, TASK_INPAINT):
             if self.input_image_path is None:
-                raise ValueError("img2img requires input_image_path")
+                raise ValueError(f"{self.mode} requires input_image_path")
             if self.strength is None:
-                raise ValueError("img2img requires strength")
+                raise ValueError(f"{self.mode} requires strength")
             if not 0.0 <= float(self.strength) <= 1.0:
                 raise ValueError(f"strength must be within 0.0..1.0, got {self.strength}")
+        if self.mode == TASK_INPAINT and self.mask_image_path is None:
+            raise ValueError("inpaint requires mask_image_path")
 
         return replace(
             self,
