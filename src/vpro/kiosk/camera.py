@@ -19,6 +19,29 @@ from .framing import FramingFeedback, evaluate_framing, target_box
 JPEG_QUALITY = 80
 GUIDE_OK = (120, 220, 120)
 GUIDE_BAD = (120, 170, 245)
+VALID_ROTATIONS = (0, 90, 180, 270)
+
+
+def rotate_frame(frame: np.ndarray, degrees: int) -> np.ndarray:
+    """Rotate clockwise by `degrees`, correcting for a physically rotated camera.
+
+    Mounting the camera on its side puts the sensor's long axis vertical, which is what a 4:5
+    portrait output wants; without it a landscape frame is cropped and most of the sensor is
+    wasted on width we throw away.
+    """
+    if degrees == 0:
+        return frame
+
+    import cv2
+
+    codes = {
+        90: cv2.ROTATE_90_CLOCKWISE,
+        180: cv2.ROTATE_180,
+        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    }
+    if degrees not in codes:
+        raise ValueError(f"rotation must be one of {VALID_ROTATIONS}, got {degrees}")
+    return cv2.rotate(frame, codes[degrees])
 
 
 @dataclass
@@ -42,7 +65,10 @@ class CameraStream:
         annotate: bool = True,
         jpeg_quality: int = JPEG_QUALITY,
         mirror_preview: bool = True,
+        rotate: int = 0,
     ) -> None:
+        if rotate not in VALID_ROTATIONS:
+            raise ValueError(f"rotate must be one of {VALID_ROTATIONS}, got {rotate}")
         self.index = index
         self.width = width
         self.height = height
@@ -51,6 +77,7 @@ class CameraStream:
         self.annotate = annotate
         self.jpeg_quality = jpeg_quality
         self.mirror_preview = mirror_preview
+        self.rotate = rotate
 
         self.stats = CameraStats()
         self.framing: FramingFeedback = evaluate_framing(None, 0, 0)
@@ -152,6 +179,9 @@ class CameraStream:
                     self.stats.last_error = "camera read failed"
                     sleep(0.05)
                     continue
+
+                # Rotate first: pose, framing and the stored capture all work in this orientation.
+                frame = rotate_frame(frame, self.rotate)
 
                 display = frame
                 if self.annotate and self.pose_backend is not None:

@@ -112,6 +112,16 @@ def build_parser() -> ArgumentParser:
         help="Requested camera capture height for kiosk preview and still capture.",
     )
     parser.add_argument(
+        "--capture-rotate",
+        type=int,
+        default=0,
+        choices=[0, 90, 180, 270],
+        help=(
+            "Clockwise rotation applied to camera frames. Use 90 or 270 for a camera mounted on "
+            "its side, which puts the sensor's long axis vertical for the 4:5 portrait output."
+        ),
+    )
+    parser.add_argument(
         "--capture-auto-start",
         action="store_true",
         help="Start countdown automatically without clicking the on-screen Start button.",
@@ -1132,6 +1142,7 @@ def _run_kiosk(args) -> None:
         camera_index=args.camera_index,
         capture_width=args.capture_width,
         capture_height=args.capture_height,
+        capture_rotate=args.capture_rotate,
         yolo_device=args.device,
         rmbg_model_dir=args.rmbg_model_dir,
         rmbg_device=args.rmbg_device,

@@ -192,6 +192,37 @@ def test_session_timeout_visible_over_http(tmp: Path) -> None:
     check("expired session resets on poll", client.get("/api/state").json()["state"] == "idle")
 
 
+def test_camera_rotation() -> None:
+    """A camera mounted on its side must be corrected before pose runs, so shapes swap."""
+    from vpro.kiosk.camera import rotate_frame
+
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    frame[0, 0] = (255, 255, 255)  # top-left marker
+
+    check("0 degrees is a no-op", rotate_frame(frame, 0).shape == (100, 200, 3))
+    check("90 swaps axes", rotate_frame(frame, 90).shape == (200, 100, 3))
+    check("270 swaps axes", rotate_frame(frame, 270).shape == (200, 100, 3))
+    check("180 keeps shape", rotate_frame(frame, 180).shape == (100, 200, 3))
+
+    # Clockwise: the top-left corner ends up top-right.
+    rotated = rotate_frame(frame, 90)
+    check("90 rotates clockwise", tuple(rotated[0, -1]) == (255, 255, 255), str(rotated[0, -1]))
+
+    rejected = False
+    try:
+        rotate_frame(frame, 45)
+    except ValueError:
+        rejected = True
+    check("invalid rotation rejected", rejected)
+
+    bad_config = False
+    try:
+        CameraStream(index=999, rotate=45)
+    except ValueError:
+        bad_config = True
+    check("camera rejects invalid rotation", bad_config)
+
+
 def main() -> int:
     import tempfile
 
@@ -209,7 +240,7 @@ def main() -> int:
         ):
             print(f"\n{test.__name__}")
             test(tmp)
-        for test in (test_camera_stream_without_device, test_camera_latest_frame_is_a_copy):
+        for test in (test_camera_stream_without_device, test_camera_latest_frame_is_a_copy, test_camera_rotation):
             print(f"\n{test.__name__}")
             test()
 
