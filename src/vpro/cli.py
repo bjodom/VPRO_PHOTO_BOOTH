@@ -154,6 +154,8 @@ def build_parser() -> ArgumentParser:
         help="Interface for the kiosk UI. Keep on localhost; only delivery needs the LAN.",
     )
     parser.add_argument("--kiosk-port", type=int, default=8000, help="Kiosk UI port.")
+    parser.add_argument("--kiosk-output-dir", type=Path, default=Path("outputs/kiosk"))
+    parser.add_argument("--open-browser", action="store_true", help="Open the local kiosk browser once the server is listening.")
     parser.add_argument(
         "--kiosk-pose-fps",
         type=float,
@@ -941,7 +943,6 @@ def _run_social_pipeline(args) -> None:
         delay_seconds=args.capture_delay_seconds,
         capture_width=args.capture_width,
         capture_height=args.capture_height,
-        pose_fps=args.kiosk_pose_fps,
         yolo_preview_backend=backend,
         yolo_device=args.device,
         auto_start=args.capture_auto_start,
@@ -953,17 +954,6 @@ def _run_social_pipeline(args) -> None:
         runner.submit_warmup()  # camera is released; overlap warmup with RMBG and compose
 
     rmbg_sec = 0.0
-    if not args.capture_skip_rmbg:
-        t_rmbg = perf_counter()
-        _run_rmbg_on_captured_image(
-            captured_image_path=captured_path,
-            model_dir=args.rmbg_model_dir,
-            device=args.rmbg_device,
-            mask_output_path=args.capture_rmbg_mask_output,
-            foreground_output_path=args.capture_rmbg_foreground_output,
-            mask_quality=args.mask_quality,
-        )
-        rmbg_sec = perf_counter() - t_rmbg
 
     t_compose = perf_counter()
     deterministic_path = _compose_portrait_from_image(
@@ -976,6 +966,8 @@ def _run_social_pipeline(args) -> None:
         prop_image_path=args.compose_prop_image,
         output_image_path=args.compose_output_image,
         mask_quality=args.mask_quality,
+        mask_output_path=None if args.capture_skip_rmbg else args.capture_rmbg_mask_output,
+        foreground_output_path=None if args.capture_skip_rmbg else args.capture_rmbg_foreground_output,
     )
     compose_sec = perf_counter() - t_compose
 
@@ -1068,6 +1060,8 @@ def _compose_portrait_from_image(
     prop_image_path: Path,
     output_image_path: Path,
     mask_quality: str,
+    mask_output_path: Path | None = None,
+    foreground_output_path: Path | None = None,
 ) -> Path:
     from .vision.pipeline import compose_portrait_from_image
 
@@ -1081,6 +1075,8 @@ def _compose_portrait_from_image(
         prop_image_path=prop_image_path,
         output_image_path=output_image_path,
         mask_quality=mask_quality,
+        mask_output_path=mask_output_path,
+        foreground_output_path=foreground_output_path,
     )
 
 
@@ -1152,10 +1148,12 @@ def _run_kiosk(args) -> None:
     from .kiosk.service import KioskConfig, KioskService
 
     config = KioskConfig(
+        output_dir=args.kiosk_output_dir,
         camera_index=args.camera_index,
         capture_width=args.capture_width,
         capture_height=args.capture_height,
         capture_rotate=args.capture_rotate,
+        pose_fps=args.kiosk_pose_fps,
         yolo_device=args.device,
         rmbg_model_dir=args.rmbg_model_dir,
         rmbg_device=args.rmbg_device,
@@ -1165,6 +1163,11 @@ def _run_kiosk(args) -> None:
         juggernaut_model_id=args.juggernaut_model_id,
         juggernaut_device=args.juggernaut_device,
         juggernaut_cache_dir=args.juggernaut_openvino_cache_dir,
+        local_files_only=args.juggernaut_local_only,
+        steps=args.juggernaut_steps if args.juggernaut_steps is not None else 30,
+        guidance_scale=args.juggernaut_guidance_scale if args.juggernaut_guidance_scale is not None else 5.0,
+        strength=args.juggernaut_guided_strength if args.juggernaut_guided_strength is not None else 0.99,
+        countdown_seconds=args.capture_delay_seconds,
         delivery_channel=args.delivery_channel,
         delivery_host=args.delivery_host,
         delivery_port=args.delivery_port,
@@ -1176,13 +1179,21 @@ def _run_kiosk(args) -> None:
     if args.model_path != Path("models"):
         config.yolo_model_path = args.model_path
 
-    service = KioskService(config).start()
+    _validate_juggernaut_dimensions_and_strength(
+        width=config.width, height=config.height, guided_strength=config.strength, steps=config.steps
+    )
+    service = KioskService(config)
+    try:
+        service.start()
+    except BaseException:
+        service.shutdown()
+        raise
     print(f"\nKiosk UI:  http://{args.kiosk_host}:{args.kiosk_port}")
     if service.delivery is not None and hasattr(service.delivery, "server"):
         print(f"Handoff:   {service.delivery.server.base_url} (guest phones)")
     print("Ctrl+C to stop.\n")
     try:
-        run(service, host=args.kiosk_host, port=args.kiosk_port)
+        run(service, host=args.kiosk_host, port=args.kiosk_port, open_browser=args.open_browser)
     except KeyboardInterrupt:
         pass
     finally:

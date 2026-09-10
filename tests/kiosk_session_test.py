@@ -193,7 +193,7 @@ def test_delivery_error_retry_keeps_the_image() -> None:
     check("enters delivery error", session.state is State.DELIVERY_ERROR)
 
     session.retry()
-    check("retry returns to ready, not generating", session.state is State.READY, session.state.value)
+    check("retry schedules handoff", session.state is State.GENERATING, session.state.value)
     check("image is preserved", session.data.final_path == Path("/tmp/final.jpg"))
 
 

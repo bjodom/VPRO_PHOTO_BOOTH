@@ -1,6 +1,7 @@
 # vPRO
 
-uv-based Python project scaffold designed to support two inference backends:
+Local photo-booth kiosk with consent, destination selection, camera preview, portrait generation,
+and QR delivery. OpenVINO models remain resident between guests. Two inference backends are available:
 
 - OpenVINO (`openvino`) as the primary backend
 - PyTorch (`torch`) as optional secondary backend
@@ -17,44 +18,66 @@ YOLO26 runtime behavior mirrors the local demo at `C:\Users\bjodom\ai_projects\u
 ## Quick Start
 
 ```powershell
-uv sync
+# One-time setup with network access. Add -UseIntelProxy on the Intel network.
+.\run.ps1 -Sync -DownloadJuggernaut
 
-# Get Juggernaut XL for the final guided render. This downloads the OpenVINO
-# Juggernaut XL model into the local Hugging Face cache for reuse.
-uvx --from huggingface_hub hf download OpenVINO/Juggernaut-XL-v9-fp16-ov
-
-# Run the complete app flow using the cloned repository layout.
-uv run vpro --run-social-pipeline --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_model --device intel:gpu --camera-index 0 --compose-scene-image assets/scenes/portrait_scene_1080x1350.jpg --compose-prop-image assets/props/lenovo.laptop.png --juggernaut-model-id OpenVINO/Juggernaut-XL-v9-fp16-ov
-```
-
-For the complete Windows flow, use the root launcher. After the project environment has been
-created with `uv sync` once, no `uv run` command is needed. The launcher uses the project's
-`.venv` directly. It captures a visitor, composes the
-deterministic portrait, runs the guided Juggernaut render, and falls back to the deterministic
-image if generation fails:
-
-The launcher defaults are optimized for this system: YOLO26 on `intel:npu`, RMBG on `GPU`, and
-Juggernaut on `GPU`. Override them only when testing another hardware configuration.
-
-```powershell
+# Daily event launch. Opens the browser after the local server starts.
 .\run.ps1
 ```
+
+The launcher uses `.venv` directly, defaults to offline model loading, and installs both `gen`
+and `kiosk` extras when `-Sync` is requested. Local YOLO and RMBG XML/BIN artifacts and the laptop
+prop must already be present. The browser is at http://127.0.0.1:8000 by default.
+
+Your selected device defaults are YOLO26 `intel:npu`, RMBG `GPU`, and Juggernaut `GPU`.
+This is a configured deployment profile, not a claim that it is optimal on every Intel system.
+The renderer loads and warms before the first guest can start. The normal kiosk uses inpainting;
+historical 5-6 second img2img measurements are not an established kiosk latency guarantee.
 
 Useful launcher options:
 
 ```powershell
-# Enable the Intel proxy, synchronize dependencies, and ensure Juggernaut is downloaded.
-.\run.ps1 -UseIntelProxy -Sync -DownloadJuggernaut
+# Set the LAN address that guest phones can reach.
+.\run.ps1 -DeliveryAdvertiseHost 192.168.1.100
 
-# Run unattended capture with the optimized default device placement.
-.\run.ps1 -CaptureAutoStart
+# Isolate acceptance-run photos and select a different UI port.
+.\run.ps1 -OutputDir outputs/event_validation -KioskPort 8001
 
-# Use a lower-cost identity-preserving render profile.
-.\run.ps1 -JuggernautPreset identity-lock
+# Diagnostic one-shot flow only, not the guest kiosk.
+.\run.ps1 -Mode social -CaptureAutoStart -JuggernautPreset identity-lock
+
+# Verify emitted arguments without starting camera or models.
+.\run.ps1 -DryRun
 ```
 
 Run `.\run.ps1 -?` to see all launcher parameters. The lower-level `uv run vpro` commands below
-remain available for individual smoke tests and development workflows.
+remain available for individual smoke tests and development workflows; prefer `uv run --no-sync`
+after setup so a plain sync does not remove optional packages.
+
+## Event Acceptance
+
+Destination selection also includes **Somewhere else**: enter a place name (2-100 characters),
+then choose **Use this place**. Custom locations remain local to the guest session and clear on reset.
+Both preset and custom destinations use masked inpainting on a neutral canvas conditioned on the
+captured portrait; the selection thumbnails are never used as guest-photo backgrounds. The person
+and laptop are positioned by the compositor and protected by the mask while the model generates
+the surroundings. Perspective, ground-plane, and contact-shadow prompts encourage a coherent scene,
+but this is not automatic reposing or full relighting of the preserved person. Unfamiliar or very
+specific places may be approximate because no online geographic lookup is performed.
+
+Run the hardware-free regression gate with `.\tests\cli_pipeline_test.ps1`.
+Then follow [the event checklist](docs/event_readiness.md) on the actual booth and guest network.
+Passing unit tests does not certify camera quality, generated likeness, or phone connectivity.
+
+The kiosk does not deliver a gray intermediate image as a successful AI portrait. Rendering
+failures offer retry; delivery failures retain the finished image and retry only the handoff.
+Hold the Intel vPro header for 1.8 seconds (or focus it and press Ctrl+Enter) for staff controls.
+This deliberate gesture prevents casual activation; it is not authentication. Keep the kiosk UI
+bound to localhost and use Windows kiosk restrictions for unattended deployments.
+
+Image retention runs every minute, with a default 24-hour window. It removes only owned capture,
+composition, coverage, mask, and final artifacts, excluding active sessions and live QR links.
+QR links expire after 15 minutes; link expiry is separate from on-disk image retention.
 
 ## Install Optional Backend Extras
 
@@ -75,8 +98,9 @@ uv run vpro --backend torch --model-path models
 
 The kiosk keeps YOLO, RMBG, and Juggernaut resources resident for the life of the process. RMBG is
 loaded and warmed once at startup, while static scene and prop assets are cached between guests.
-The preview camera continues capturing at the configured camera rate, but YOLO pose inference is
-limited to 15 FPS by default so the live preview leaves GPU headroom for other work.
+Raw camera acquisition runs separately from subscriber-driven preview processing. YOLO pose
+inference is limited to 15 FPS by default and cached results are drawn on intervening previews.
+JPEG previews are capped at 1280 pixels on the long edge; saved captures retain camera resolution.
 
 Tune the pose rate and output retention window for a target booth:
 
@@ -84,8 +108,10 @@ Tune the pose rate and output retention window for a target booth:
 uv run vpro --kiosk --kiosk-pose-fps 10 --kiosk-output-retention-hours 48
 ```
 
-The kiosk state endpoint reports the latest deterministic-pipeline timings and Juggernaut queue
-rejections. Re-run `tests/gpu_contention_test.py` on each target hardware configuration; integrated
+The kiosk state endpoint reports stage timings, render and queue wait, queue depth, and rejections.
+Outcome metrics are appended to `outputs/kiosk/pipeline_metrics.jsonl` without photo paths or tokens.
+`/health` is liveness; `/health/ready` reports camera/renderer readiness and returns 503 while unready.
+Re-run `tests/gpu_contention_test.py` on each target hardware configuration; integrated
 and discrete Intel GPUs can behave differently under concurrent camera and diffusion workloads.
 
 ## OpenVINO Smoke Test

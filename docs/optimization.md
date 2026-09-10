@@ -1,3 +1,11 @@
+# Current Event Configuration
+
+The measurements below are historical experiments, principally low-strength img2img, not a latency
+guarantee for the current kiosk. The event launcher now uses persistent **inpainting, 30 steps,
+strength 0.99**, warms before the first guest, and keeps your NPU/GPU/GPU placement. Validate it with
+`tests/kiosk_flow_test.py --runs 10` and [the event checklist](event_readiness.md).
+Preview acquisition is separate from pose/encoding; output retention is periodic, not startup-only.
+
 # vPRO Photo Booth — Performance Optimization
 
 Branch: `master` · Last updated: 14 Aug 2026

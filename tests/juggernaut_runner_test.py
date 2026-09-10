@@ -96,6 +96,37 @@ def test_serializes_renders() -> None:
     check("FIFO order preserved", rec.calls == [f"r{i}.jpg" for i in range(8)], str(rec.calls))
 
 
+def test_shutdown_with_full_queue() -> None:
+    from unittest.mock import patch
+    from time import perf_counter
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def render(**kwargs):
+        entered.set()
+        release.wait(5)
+        return kwargs["output_path"]
+
+    with patch.object(jr, "load_juggernaut_pipeline", return_value=object()), \
+         patch.object(jr, "render_text2img", side_effect=render):
+        runner = JuggernautRunner(warmup=False, queue_size=1).start()
+        runner.wait_until_ready(timeout=2)
+        active = runner.submit(request("active.jpg"))
+        check("render entered before shutdown", entered.wait(2))
+        pending = runner.submit(request("pending.jpg"))
+        worker = runner._thread
+        started = perf_counter()
+        try:
+            runner.shutdown(wait=False)
+            check("full queue shutdown does not block", perf_counter() - started < 0.5)
+            check("shutdown cancels queued requests", pending.cancelled())
+        finally:
+            release.set()
+            worker.join(timeout=3)
+        check("active render finishes before stop", active.done() and runner.state == STATE_STOPPED)
+
+
 def test_submit_before_ready_is_queued() -> None:
     rec = Recorder()
     install(rec, load_delay=0.3)
@@ -227,14 +258,23 @@ def test_shutdown_stops_worker() -> None:
     check("shutdown is idempotent", (runner.shutdown() or True))
 
 
-def test_warmup_failure_does_not_block() -> None:
+def test_warmup_failure_prevents_readiness() -> None:
     rec = Recorder()
     rec.fail_on = {"warmup.jpg"}
     install(rec)
     with JuggernautRunner(warmup=True) as runner:
-        runner.wait_until_ready(timeout=5)
-        result = runner.submit(request("real.jpg")).result(timeout=10)
-    check("runner serves requests after a failed warmup", result.ok)
+        try:
+            runner.wait_until_ready(timeout=5)
+        except RuntimeError:
+            check("failed warmup prevents readiness", runner.state == STATE_FAILED)
+        else:
+            raise AssertionError("Failed warmup was reported as ready")
+        try:
+            runner.submit(request("real.jpg"))
+        except RuntimeError:
+            check("failed warmup rejects guest renders", "real.jpg" not in rec.calls)
+        else:
+            raise AssertionError("Guest render accepted after failed warmup")
 
 
 def main() -> int:

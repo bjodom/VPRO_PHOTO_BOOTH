@@ -107,6 +107,8 @@ class JuggernautRunner:
         with self._lock:
             if self._thread is not None:
                 return self
+            self._ready.clear()
+            self._error = None
             self._state = STATE_LOADING
             self._thread = threading.Thread(
                 target=self._run, name="juggernaut-runner", daemon=True
@@ -131,7 +133,14 @@ class JuggernautRunner:
             if thread is None:
                 return
             self._thread = None
-        self._queue.put(_SHUTDOWN)
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not _SHUTDOWN:
+                    item[1].cancel()
+            self._queue.put_nowait(_SHUTDOWN)
         if wait:
             thread.join(timeout)
 
@@ -158,7 +167,10 @@ class JuggernautRunner:
 
         future: Future[RenderResult] = Future()
         try:
-            self._queue.put_nowait((request, future, perf_counter()))
+            with self._lock:
+                if self._thread is None or self._state == STATE_FAILED:
+                    raise RuntimeError("Renderer is stopped or unavailable")
+                self._queue.put_nowait((request, future, perf_counter()))
         except queue.Full as exc:
             self._queue_rejections += 1
             raise RuntimeError(
@@ -366,11 +378,7 @@ class JuggernautRunner:
 
     def _run_warmup(self) -> None:
         """Absorb first-render cost at boot so no guest pays it."""
-        try:
-            self._execute(self._warmup_request())
-        except Exception as exc:
-            # A failed warmup must not stop the runner from serving real requests.
-            print(f"Juggernaut warmup render failed (continuing): {exc}", flush=True)
+        self._execute(self._warmup_request())
 
     def _drain_pending(self) -> None:
         while True:

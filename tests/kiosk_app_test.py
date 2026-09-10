@@ -42,7 +42,7 @@ class FakeCamera:
         self.stats = type("S", (), {"fps": 30.0, "inference_seconds": 0.01, "last_error": None})()
         self.frame: np.ndarray | None = np.zeros((80, 64, 3), dtype=np.uint8)
 
-    def latest_frame(self):
+    def latest_frame(self, max_age=None):
         return self.frame
 
     def mjpeg_frames(self, boundary: str = "frame"):
@@ -155,6 +155,30 @@ def test_missing_images_404(tmp: Path) -> None:
     check("no capture yet", client.get("/api/capture.jpg").status_code == 404)
 
 
+def test_custom_location(tmp: Path) -> None:
+    from vpro.kiosk.scenes import get_scene
+
+    client, service = client_for(tmp)
+    client.post("/api/action/start")
+    client.post("/api/action/accept_consent")
+    for location in ("", "x", "x" * 101, "Kyoto\nJapan", "<script>", ["Kyoto"]):
+        response = client.post("/api/action/choose_scene", json={"scene": "custom", "custom_location": location})
+        check("invalid custom location rejected", response.status_code == 400)
+        check("invalid place stays on selection", service.session.state is State.SELECT_SCENE)
+    response = client.post("/api/action/choose_scene", json={"scene": "custom", "custom_location": "  Kyoto,   Japan "})
+    check("custom destination enters pose", response.json()["state"] == "pose")
+    check("custom place normalized", response.json()["custom_location"] == "Kyoto, Japan")
+    scene = get_scene("custom", service.session.data.custom_location)
+    check("custom location reaches generated prompt", "Kyoto, Japan" in scene.background_prompt())
+    check("prompt guides perspective and ground", "ground plane" in scene.background_prompt() and "eye-level" in scene.background_prompt())
+    client.post("/api/action/choose_another_scene")
+    check("changing scenes clears custom place", service.session.data.custom_location is None)
+    client.post("/api/action/choose_scene", json={"scene": "fuji"})
+    check("preset still works after custom", service.session.data.scene == "fuji")
+    client.post("/api/action/reset")
+    check("reset clears custom place", client.get("/api/state").json()["custom_location"] is None)
+
+
 def test_preview_stream(tmp: Path) -> None:
     client, _ = client_for(tmp)
     with client.stream("GET", "/api/preview.mjpg") as response:
@@ -237,6 +261,7 @@ def main() -> int:
             test_invalid_transition_returns_409,
             test_unknown_action_and_bad_scene,
             test_missing_images_404,
+            test_custom_location,
             test_preview_stream,
             test_session_timeout_visible_over_http,
         ):
@@ -250,5 +275,43 @@ def main() -> int:
     return 0
 
 
+def serve_preview() -> None:
+    import tempfile
+    import cv2
+    import uvicorn
+    from vpro.delivery.local_qr import render_qr_svg
+
+    class PreviewService(StubService):
+        def _capture_now(self) -> None:
+            path = self.tmp / "capture.jpg"
+            cv2.imwrite(str(path), np.full((1350, 1080, 3), 110, dtype=np.uint8))
+            self.session.capture(path)
+
+        def _start_pipeline(self) -> None:
+            self.status.stage = "generating"
+            session_id = self.session.session_id
+            def complete():
+                self._apply(session_id, lambda: self.session.generation_succeeded(
+                    self.session.data.capture_path, delivery_url="http://127.0.0.1:8879/api/final.jpg",
+                    delivery_qr_svg=render_qr_svg("http://127.0.0.1:8879/api/final.jpg"), caption="Preview fixture"
+                ))
+            threading.Timer(2, complete).start()
+
+    class PreviewCamera(FakeCamera):
+        def mjpeg_frames(self, boundary="frame"):
+            payload = cv2.imencode(".jpg", np.full((1350, 1080, 3), 110, dtype=np.uint8))[1].tobytes()
+            yield b"--" + boundary.encode() + b"\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
+
+    with tempfile.TemporaryDirectory(prefix="vpro-ui-preview-") as raw:
+        service = PreviewService(Path(raw))
+        service.camera = PreviewCamera()
+        service.status.renderer_state = "ready"
+        print("Hardware-free UI preview: http://127.0.0.1:8879")
+        uvicorn.run(create_app(service), host="127.0.0.1", port=8879, log_level="warning")
+
+
 if __name__ == "__main__":
+    if "--serve-preview" in sys.argv:
+        serve_preview()
+        raise SystemExit(0)
     raise SystemExit(main())

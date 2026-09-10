@@ -60,6 +60,7 @@ class InvalidTransition(RuntimeError):
 @dataclass
 class SessionData:
     scene: str | None = None
+    custom_location: str | None = None
     capture_path: Path | None = None
     composed_path: Path | None = None
     final_path: Path | None = None
@@ -113,11 +114,12 @@ class KioskSession:
         self._require(State.CONSENT)
         return self._go(State.SELECT_SCENE)
 
-    def choose_scene(self, scene: str) -> State:
+    def choose_scene(self, scene: str, custom_location: str | None = None) -> State:
         self._require(State.SELECT_SCENE)
         if not scene or not scene.strip():
             raise ValueError("scene must be a non-empty string")
         self.data.scene = scene
+        self.data.custom_location = custom_location if scene == "custom" else None
         return self._go(State.POSE)
 
     def capture(self, capture_path: Path) -> State:
@@ -181,7 +183,7 @@ class KioskSession:
         if self.state == State.DELIVERY_ERROR:
             self.data.error = None
             # The image already exists; only the handoff needs redoing.
-            return self._go(State.GENERATING if self.data.final_path is None else State.READY)
+            return self._go(State.GENERATING)
         if self.state == State.CAMERA_ERROR:
             self.data.error = None
             return self._go(State.POSE)
@@ -190,6 +192,7 @@ class KioskSession:
     def choose_another_scene(self) -> State:
         self._require(State.GENERATION_ERROR, State.REVIEW, State.POSE)
         self.data.scene = None
+        self.data.custom_location = None
         return self._go(State.SELECT_SCENE)
 
     def reset(self, reason: str = "reset") -> State:

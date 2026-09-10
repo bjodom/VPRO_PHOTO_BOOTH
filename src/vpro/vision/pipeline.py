@@ -37,6 +37,8 @@ def compose_portrait_from_image(
     coverage_output_path: Path | None = None,
     rmbg_runtime: Any | None = None,
     timings: dict[str, float] | None = None,
+    mask_output_path: Path | None = None,
+    foreground_output_path: Path | None = None,
 ) -> Path:
     import cv2
 
@@ -94,6 +96,11 @@ def compose_portrait_from_image(
         quality=mask_quality,
     )
     foreground[:, :, 3] = clean_mask
+    for path, image in ((mask_output_path, clean_mask), (foreground_output_path, foreground)):
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(path), image):
+                raise RuntimeError(f"Could not write image: {path}")
 
     compose_start = perf_counter()
     composed = compose_portrait(
@@ -111,7 +118,8 @@ def compose_portrait_from_image(
     saved_path = save_composed_image(composed.image_bgr, output_image_path)
     if coverage_output_path is not None and composed.coverage_mask is not None:
         coverage_output_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(coverage_output_path), composed.coverage_mask)
+        if not cv2.imwrite(str(coverage_output_path), composed.coverage_mask):
+            raise RuntimeError(f"Could not write coverage mask: {coverage_output_path}")
     if timings is not None:
         timings["composition_seconds"] = perf_counter() - compose_start
     if verbose:

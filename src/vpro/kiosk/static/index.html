@@ -2,25 +2,33 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>vPRO Travel Photo Experience</title>
-<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/styles.css?v=custom-location-1">
 </head>
 <body>
 <div id="app">
   <header class="bar">
-    <span class="brand">vPRO Travel Photo Experience</span>
+    <button class="brand" id="staff" type="button" title="Hold for staff controls" aria-label="Intel vPro; hold for staff controls">Intel <strong>vPro</strong></button>
     <span class="spacer"></span>
     <span id="timer" class="timer"></span>
-    <button id="staff" class="ghost" type="button">Staff</button>
+    <span class="event-name">Travel Photo Experience</span>
   </header>
+  <p id="connection" class="notice" role="status" hidden></p>
+  <p id="action-error" class="notice" role="alert" hidden></p>
 
   <main id="screens">
 
     <section class="screen" data-state="idle">
-      <h1>Put yourself anywhere.<br>Hold a vPro laptop.</h1>
-      <p class="lede">About a minute. Scan a QR code to take it with you.</p>
-      <button class="primary xl" data-action="start">Start Your Photo Experience</button>
+      <img class="destination-backdrop" src="/static/fuji.jpg" alt="Mount Fuji destination" fetchpriority="high">
+      <div class="attract-copy">
+        <p class="eyebrow">Intel vPro</p>
+        <h1>Your travel portrait</h1>
+        <p class="lede">A new destination. A photo that's yours.</p>
+        <button class="primary xl" data-action="start">Start Your Photo Experience</button>
+        <p id="availability" role="status"></p>
+      </div>
+      <a class="credits-link" href="/static/credits.html" target="_blank" rel="noopener">Photo credits</a>
     </section>
 
     <section class="screen" data-state="consent">
@@ -30,6 +38,7 @@
         <li>All image processing runs locally on this kiosk.</li>
         <li>We do not ask for your phone number, email, or any personal details.</li>
         <li>You download your image by scanning a QR code. The link expires in 15 minutes.</li>
+        <li id="retention-copy">Photos and working images are automatically removed after the retention period, except while a session or download link is active.</li>
       </ul>
       <label class="check">
         <input type="checkbox" id="consent-box">
@@ -46,16 +55,26 @@
     <section class="screen" data-state="select_scene">
       <h2>Choose your destination</h2>
       <div id="scene-grid" class="grid"></div>
+      <form id="custom-location-form" class="custom-location-form">
+        <label for="custom-location">Somewhere else</label>
+        <div class="custom-location-entry">
+          <input id="custom-location" name="location" type="text" placeholder="Kyoto, Japan" aria-label="Place name" minlength="2" maxlength="100" required autocomplete="off" enterkeyhint="go">
+          <button class="primary" id="custom-location-submit" type="submit">Use this place</button>
+        </div>
+      </form>
+      <button class="ghost" data-action="reset">Cancel</button>
     </section>
 
     <section class="screen" data-state="pose">
       <h2>Strike a pose</h2>
-      <p class="lede">Stand inside the guide and hold one hand up for the laptop.</p>
-      <div class="preview"><img id="preview-pose" alt="Camera preview"></div>
+      <p id="selected-destination" class="muted"></p>
+      <p class="lede">Palm up, as if you're holding a laptop.</p>
+      <div class="preview"><img id="preview-pose" alt="Camera preview"><div id="countdown" role="status" aria-live="assertive" hidden></div><span class="hand-target" aria-hidden="true">Palm up here</span></div>
       <p id="framing-hint" class="framing">Step into view</p>
       <div class="row">
         <button class="ghost" data-action="choose_another_scene">Change scene</button>
-        <button class="primary xl" id="capture-btn" data-action="capture">Take Photo</button>
+        <button class="primary xl" id="capture-btn" type="button">Take Photo</button>
+        <button class="ghost" id="cancel-countdown" type="button" hidden>Cancel countdown</button>
       </div>
     </section>
 
@@ -71,17 +90,22 @@
     <section class="screen" data-state="generating">
       <h2>Creating your image</h2>
       <div class="spinner" aria-hidden="true"></div>
-      <p class="lede">Running the local AI pipeline: pose, extraction, composite, restyle.</p>
-      <p class="muted">Everything happens on this machine.</p>
+      <p class="lede" id="generation-stage" role="status">Preparing your portrait</p>
+      <ol class="stages" aria-label="Image progress"><li data-stage="composing">Portrait</li><li data-stage="generating">Destination</li><li data-stage="delivery">Download</li></ol>
+      <p class="muted" id="generation-time"></p>
+      <button class="ghost" data-action="reset">Cancel</button>
     </section>
 
     <section class="screen" data-state="ready">
-      <h2>Your photo is ready</h2>
+      <h2 id="ready-title">Your photo is ready</h2>
+      <p id="result-notice" class="notice" hidden></p>
       <div class="ready-layout">
         <div class="preview"><img id="final-img" alt="Your generated photo"></div>
         <div class="handoff">
           <div id="qr" class="qr"></div>
-          <p class="lede">Scan to download to your phone.</p>
+          <p class="lede">Your portrait, to go.</p>
+          <p>Scan on the event Wi-Fi.</p>
+          <p class="muted">Link expires in 15 minutes. Can't connect? Ask staff.</p>
           <p class="muted" id="ready-url"></p>
           <button class="ghost" id="caption-btn" type="button">Show caption</button>
           <pre id="caption" class="caption" hidden></pre>
@@ -127,13 +151,13 @@
 
   </main>
 
-  <aside id="staff-panel" hidden>
+  <aside id="staff-panel" role="dialog" aria-label="Staff controls" hidden>
     <h3>Staff</h3>
     <pre id="staff-status"></pre>
-    <button class="ghost" data-action="reset">Force Reset</button>
+    <button class="ghost" id="force-reset" type="button">Force Reset</button>
     <button class="ghost" id="staff-close" type="button">Close</button>
   </aside>
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=custom-location-1"></script>
 </body>
 </html>

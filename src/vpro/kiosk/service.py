@@ -8,16 +8,22 @@ from __future__ import annotations
 
 import threading
 import traceback
+import json
+import math
+from contextlib import nullcontext
+from statistics import median
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from ..delivery import DeliveryRequest, build_delivery
 from ..vision.juggernaut_types import RenderRequest
 from .camera import CameraStream
-from .scenes import BACKGROUND_NEGATIVE_PROMPT, SCENES, get_scene
+from .scenes import SCENES, get_scene
 from .session import KioskSession, State
 
 CAPTION = "Made at the Intel vPro Photo Booth #vPro #IntelAI"
@@ -44,6 +50,7 @@ class KioskConfig:
 
     juggernaut_model_id: str = "OpenVINO/Juggernaut-XL-v9-fp16-ov"
     juggernaut_device: str = "GPU"
+    local_files_only: bool = True
     juggernaut_cache_dir: Path = Path("outputs/openvino_cache/juggernaut")
     steps: int = 30
     guidance_scale: float = 5.0
@@ -66,6 +73,12 @@ class KioskConfig:
     countdown_seconds: int = 3
     enable_generation: bool = True
 
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.output_retention_hours) or self.output_retention_hours < 0:
+            raise ValueError("Retention must be finite and nonnegative")
+        if not 0 <= self.countdown_seconds <= 30:
+            raise ValueError("Countdown must be between 0 and 30 seconds")
+
 
 @dataclass
 class ServiceStatus:
@@ -77,6 +90,8 @@ class ServiceStatus:
     startup_seconds: float | None = None
     queue_rejections: int = 0
     last_pipeline_timings: dict[str, float] = field(default_factory=dict)
+    stage: str = "idle"
+    queue_depth: int = 0
 
 
 class KioskService:
@@ -91,14 +106,30 @@ class KioskService:
         self.delivery: Any = None
         self._backend: Any = None
         self._rmbg_runtime: Any = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
         self._warmed = False
+        self._stop = threading.Event()
+        self._maintenance: threading.Thread | None = None
+        self._active_paths: set[Path] = set()
+        self._pipeline_started = 0.0
+        self._render_samples: list[float] = []
 
     # -- lifecycle -----------------------------------------------------------------
 
     def start(self) -> KioskService:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        from openvino import Core
+        from ..vision.rmbg_runtime import validate_rmbg_assets
+
+        available = {device.split(".")[0] for device in Core().available_devices}
+        for configured in (self.config.yolo_device, self.config.rmbg_device, self.config.juggernaut_device):
+            target = configured.removeprefix("intel:").upper().split(".")[0]
+            if target not in available and target not in {"AUTO", "MULTI", "HETERO"}:
+                raise RuntimeError(f"Configured device {configured} is unavailable; detected {sorted(available)}")
+        validate_rmbg_assets(self.config.rmbg_model_dir)
+        if not self.config.prop_image.is_file():
+            raise FileNotFoundError(f"Laptop prop not found: {self.config.prop_image}")
 
         from ..backends.factory import build_backend
 
@@ -139,23 +170,30 @@ class KioskService:
         if self.config.enable_generation:
             from ..vision.juggernaut_runner import JuggernautRunner
 
-            # warmup=False: diffusion inference starves the live preview, so it is deferred
-            # until a guest has finished at the camera (see docs/optimization.md 2.6).
             self.runner = JuggernautRunner(
                 model_id=self.config.juggernaut_model_id,
                 device=self.config.juggernaut_device,
+                local_files_only=self.config.local_files_only,
                 openvino_cache_dir=self.config.juggernaut_cache_dir,
                 task="inpaint",
-                warmup=False,
+                warmup=True,
                 warmup_width=self.config.width,
                 warmup_height=self.config.height,
             ).start()
+            self._warmed = True
 
+        self._maintenance = threading.Thread(target=self._maintain, name="vpro-retention", daemon=True)
+        self._maintenance.start()
         return self
 
     def shutdown(self) -> None:
+        self._stop.set()
         if self.camera is not None:
             self.camera.stop()
+        if self._worker is not None:
+            self._worker.join(timeout=5)
+        if self._maintenance is not None:
+            self._maintenance.join(timeout=5)
         if self.runner is not None:
             self.runner.shutdown()
         if self.delivery is not None:
@@ -170,6 +208,10 @@ class KioskService:
     # -- state for the UI ----------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return self._snapshot()
+
+    def _snapshot(self) -> dict[str, Any]:
         session = self.session
         session.tick()
         if self.camera is not None:
@@ -184,17 +226,27 @@ class KioskService:
             self.status.renders_served = status.renders_served
             self.status.startup_seconds = status.startup_seconds
             self.status.queue_rejections = status.queue_rejections
+            self.status.queue_depth = status.queue_depth
 
         return {
             "state": session.state.value,
             "session_id": session.session_id,
             "seconds_remaining": session.seconds_remaining,
             "scene": session.data.scene,
+            "custom_location": session.data.custom_location,
             "error": session.data.error,
             "delivery_url": session.data.delivery_url,
             "qr_svg": session.data.delivery_qr_svg,
             "caption": session.data.caption,
             "has_final_image": session.data.final_path is not None,
+            "generation_enabled": self.config.enable_generation,
+            "countdown_seconds": self.config.countdown_seconds,
+            "retention_hours": self.config.output_retention_hours,
+            "stage": self.status.stage,
+            "elapsed_seconds": round(perf_counter() - self._pipeline_started, 1)
+            if session.state is State.GENERATING else 0,
+            "estimated_seconds": round(median(self._render_samples)) if len(self._render_samples) >= 3 else None,
+            "busy": self._worker is not None and self._worker.is_alive(),
             "framing": self._framing_snapshot(),
             "scenes": [
                 {"key": s.key, "label": s.label, "description": s.description} for s in SCENES
@@ -206,6 +258,7 @@ class KioskService:
                 "renders_served": self.status.renders_served,
                 "startup_seconds": self.status.startup_seconds,
                 "queue_rejections": self.status.queue_rejections,
+                "queue_depth": self.status.queue_depth,
                 "pipeline_timings": dict(self.status.last_pipeline_timings),
                 "last_error": self.status.last_error,
             },
@@ -225,25 +278,37 @@ class KioskService:
     # -- guest actions -------------------------------------------------------------
 
     def act(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._lock:
+            return self._act(action, payload)
+
+    def _act(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
         session = self.session
+        if "session_id" in payload and payload["session_id"] != session.session_id:
+            raise ValueError("This session has ended. Please start again.")
 
         if action == "start":
             session.start()
         elif action == "accept_consent":
             session.accept_consent()
         elif action == "choose_scene":
-            session.choose_scene(str(payload.get("scene", "")))
+            scene = get_scene(str(payload.get("scene", "")), payload.get("custom_location"))
+            session.choose_scene(scene.key, scene.label if scene.key == "custom" else None)
         elif action == "capture":
             self._capture_now()
         elif action == "retake":
             session.retake()
         elif action == "accept_capture":
+            self._require_worker_idle()
             session.accept_capture()
             self._start_pipeline()
         elif action == "finish":
             session.finish()
         elif action == "retry":
+            self._require_worker_idle()
+            if session.state is State.CAMERA_ERROR and self.camera is not None:
+                self.camera.stop()
+                self.camera.start()
             resumed = session.retry()
             if resumed is State.GENERATING:
                 self._start_pipeline()
@@ -256,21 +321,31 @@ class KioskService:
 
         return self.snapshot()
 
+    def _require_worker_idle(self) -> None:
+        if self._worker is not None and self._worker.is_alive():
+            raise ValueError("The previous image is still finishing. Please try again shortly.")
+        if self.runner is not None and self.runner.status().state == "rendering":
+            raise ValueError("The renderer is still finishing. Please try again shortly.")
+
     def _capture_now(self) -> None:
+        self.session._require(State.POSE)
         if self.camera is None:
             self.session.camera_failed("camera is not running")
             return
-        frame = self.camera.latest_frame()
+        frame = self.camera.latest_frame(max_age=1.0)
         if frame is None:
             self.session.camera_failed("no frame available from the camera")
             return
 
         import cv2
 
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = uuid4().hex
         path = self.config.output_dir / f"capture_{stamp}.jpg"
-        cv2.imwrite(str(path), frame)
+        if not cv2.imwrite(str(path), frame):
+            self.session.camera_failed("Could not save the photo. Ask staff to check disk space.")
+            return
         self.session.capture(path)
+        self.camera.annotate = False
         self._warm_renderer()
 
     def _warm_renderer(self) -> None:
@@ -292,6 +367,10 @@ class KioskService:
 
     def _start_pipeline(self) -> None:
         session_id = self.session.session_id
+        self._pipeline_started = perf_counter()
+        self.status.last_pipeline_timings = {}
+        self.status.last_error = None
+        self.status.stage = "preparing"
         self._worker = threading.Thread(
             target=self._run_pipeline, args=(session_id,), name="vpro-kiosk-pipeline", daemon=True
         )
@@ -304,15 +383,24 @@ class KioskService:
             detail = f"{type(exc).__name__}: {exc}"
             self.status.last_error = detail
             traceback.print_exc()
-            self._apply(session_id, lambda: self.session.generation_failed(detail))
+            self._apply(session_id, lambda: self.session.generation_failed(
+                "Your image could not be completed. Please try again or ask staff for help."
+            ))
+            self._record_metrics(False)
             return
+        finally:
+            with self._lock:
+                self._active_paths.clear()
 
         if final_path is None:
             return  # the guest left; _produce already bailed out
 
         if delivery is None or not delivery.ok:
             reason = "delivery unavailable" if delivery is None else (delivery.error or "unknown")
-            self._apply(session_id, lambda: self.session.delivery_failed(reason))
+            self.status.last_error = reason
+            self._apply(session_id, lambda: self.session.delivery_failed(
+                "Your portrait is saved. Please retry the download or ask staff."
+            ))
             return
 
         self._apply(
@@ -329,45 +417,56 @@ class KioskService:
         import cv2
         import numpy as np
 
-        from ..vision.juggernaut_runtime import feather_mask
         from ..vision.pipeline import compose_portrait_from_image
 
         config = self.config
-        capture_path = self.session.data.capture_path
-        scene_key = self.session.data.scene
+        with self._lock:
+            if self._abandoned(session_id):
+                return None, None
+            capture_path = self.session.data.capture_path
+            scene_key = self.session.data.scene
+            custom_location = self.session.data.custom_location
+            saved_final = self.session.data.final_path
+            if capture_path is not None:
+                self._active_paths.add(capture_path)
+        if saved_final is not None and saved_final.is_file():
+            return saved_final, self._deliver(session_id, saved_final)
         if capture_path is None or scene_key is None:
             raise RuntimeError("capture or scene missing when the pipeline started")
 
-        scene = get_scene(scene_key)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        scene = get_scene(scene_key, custom_location)
+        stamp = uuid4().hex
         composed_path = config.output_dir / f"composed_{stamp}.jpg"
         coverage_path = config.output_dir / f"coverage_{stamp}.png"
 
         # The destination is generated around the guest, so the backdrop only has to be neutral.
         canvas_path = config.output_dir / "neutral_canvas.png"
         if not canvas_path.exists():
-            cv2.imwrite(
+            if not cv2.imwrite(
                 str(canvas_path),
                 np.full((config.height, config.width, 3), 128, dtype=np.uint8),
-            )
+            ):
+                raise RuntimeError("Could not write composition canvas")
 
         timings: dict[str, float] = {}
+        self.status.stage = "composing"
         started = perf_counter()
-        composed = compose_portrait_from_image(
-            backend=self._backend,
-            input_image_path=capture_path,
-            rmbg_model_dir=config.rmbg_model_dir,
-            rmbg_device=config.rmbg_device,
-            yolo_device=config.yolo_device,
-            scene_image_path=canvas_path,
-            prop_image_path=config.prop_image,
-            output_image_path=composed_path,
-            mask_quality=config.mask_quality,
-            verbose=False,
-            coverage_output_path=coverage_path,
-            rmbg_runtime=self._rmbg_runtime,
-            timings=timings,
-        )
+        with self.camera.inference_lock if self.camera is not None else nullcontext():
+            composed = compose_portrait_from_image(
+                backend=self._backend,
+                input_image_path=capture_path,
+                rmbg_model_dir=config.rmbg_model_dir,
+                rmbg_device=config.rmbg_device,
+                yolo_device=config.yolo_device,
+                scene_image_path=canvas_path,
+                prop_image_path=config.prop_image,
+                output_image_path=composed_path,
+                mask_quality=config.mask_quality,
+                verbose=False,
+                coverage_output_path=coverage_path,
+                rmbg_runtime=self._rmbg_runtime,
+                timings=timings,
+            )
         timings["compose_total_seconds"] = perf_counter() - started
         self.status.last_pipeline_timings = dict(timings)
         print(f"[kiosk] compose {perf_counter() - started:.2f}s -> {composed}")
@@ -377,14 +476,15 @@ class KioskService:
 
         final_path = composed
         if self.runner is not None:
+            self.status.stage = "generating"
             mask_path = self._build_inpaint_mask(coverage_path, stamp)
             render_path = config.output_dir / f"final_{stamp}.jpg"
             started = perf_counter()
-            result = self.runner.render(
+            future = self.runner.submit(
                 RenderRequest(
                     mode="inpaint",
                     prompt=scene.background_prompt(),
-                    negative_prompt=BACKGROUND_NEGATIVE_PROMPT,
+                    negative_prompt=scene.background_negative_prompt(),
                     output_path=render_path,
                     steps=config.steps,
                     guidance_scale=config.guidance_scale,
@@ -395,31 +495,94 @@ class KioskService:
                     mask_image_path=mask_path,
                 )
             )
+            while True:
+                if self._abandoned(session_id):
+                    future.cancel()
+                    return None, None
+                try:
+                    result = future.result(timeout=0.25)
+                    break
+                except FutureTimeout:
+                    if perf_counter() - started > 170:
+                        future.cancel()
+                        raise RuntimeError("Rendering exceeded the event time limit")
             timings["juggernaut_seconds"] = perf_counter() - started
+            timings["queue_wait_seconds"] = result.queue_wait_seconds
+            timings["render_seconds"] = result.render_seconds
             self.status.last_pipeline_timings = dict(timings)
             print(f"[kiosk] render {perf_counter() - started:.2f}s ok={result.ok}")
             if not result.ok or result.output_path is None:
-                # The deterministic compose is a real image, so hand that over instead of failing.
-                self.status.last_error = result.error
-                print(f"[kiosk] render failed, using deterministic compose: {result.error}")
+                raise RuntimeError(result.error or "Generation returned no image")
             else:
                 final_path = result.output_path
 
         if self._abandoned(session_id):
             return None, None
 
-        delivery = self.delivery.deliver(
-            DeliveryRequest(image_path=final_path, caption=CAPTION)
-        )
+        with self._lock:
+            if self._abandoned(session_id):
+                return None, None
+            self.session.data.final_path = final_path
+        delivery = self._deliver(session_id, final_path)
+        timings["total_seconds"] = perf_counter() - self._pipeline_started
+        self.status.last_pipeline_timings.update(timings)
+        self._record_metrics(bool(delivery and delivery.ok))
+        if delivery and delivery.ok:
+            self._render_samples = (self._render_samples + [timings["total_seconds"]])[-20:]
         return final_path, delivery
+
+    def _record_metrics(self, success: bool) -> None:
+        record = {"time": datetime.now().isoformat(), "success": success,
+                  "generation_enabled": self.runner is not None,
+                  "task": "inpaint", "steps": self.config.steps, "strength": self.config.strength,
+                  "yolo_device": self.config.yolo_device, "rmbg_device": self.config.rmbg_device,
+                  "render_device": self.config.juggernaut_device, **self.status.last_pipeline_timings}
+        try:
+            with (self.config.output_dir / "pipeline_metrics.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record) + "\n")
+        except OSError as exc:
+            print(f"[kiosk] could not record metrics: {exc}")
+
+    def _deliver(self, session_id: int, final_path: Path) -> Any:
+        from ..delivery.base import DeliveryResult
+
+        with self._lock:
+            if self._abandoned(session_id):
+                return None
+            self.status.stage = "delivery"
+        started = perf_counter()
+        try:
+            return self.delivery.deliver(DeliveryRequest(image_path=final_path, caption=CAPTION))
+        except Exception as exc:
+            return DeliveryResult(ok=False, channel=self.config.delivery_channel, error=str(exc))
+        finally:
+            self.status.last_pipeline_timings["delivery_seconds"] = perf_counter() - started
+
+    def _maintain(self) -> None:
+        while not self._stop.wait(60):
+            with self._lock:
+                self.session.tick()
+            self._cleanup_old_outputs()
+            store = getattr(self.delivery, "store", None)
+            if store is not None:
+                store.purge_expired()
 
     def _cleanup_old_outputs(self) -> None:
         if self.config.output_retention_hours <= 0:
             return
         cutoff = datetime.now().timestamp() - (self.config.output_retention_hours * 3600.0)
+        with self._lock:
+            protected = self._active_paths | {
+                self.session.data.capture_path, self.session.data.final_path
+            }
+        store = getattr(self.delivery, "store", None)
+        if store is not None:
+            protected |= store.active_paths()
         for path in self.config.output_dir.iterdir():
             try:
-                if path.is_file() and path.stat().st_mtime < cutoff:
+                if (path not in protected and path.resolve() not in protected
+                    and path.name.startswith(("capture_", "composed_", "coverage_", "mask_", "final_"))
+                    and path.is_file() and path.stat().st_mtime < cutoff):
                     path.unlink(missing_ok=True)
             except OSError as exc:
                 print(f"[kiosk] could not remove stale output {path}: {exc}")
@@ -446,12 +609,13 @@ class KioskService:
             expand_px=-abs(self.config.mask_erode_px),
         )
         mask_path = self.config.output_dir / f"mask_{stamp}.png"
-        cv2.imwrite(str(mask_path), 255 - locked)
+        if not cv2.imwrite(str(mask_path), 255 - locked):
+            raise RuntimeError("Could not save inpaint mask")
         return mask_path
 
     def _abandoned(self, session_id: int) -> bool:
         """True once the guest's session has been replaced, so results must be discarded."""
-        return self.session.session_id != session_id
+        return self._stop.is_set() or self.session.session_id != session_id
 
     def _apply(self, session_id: int, action) -> None:
         with self._lock:

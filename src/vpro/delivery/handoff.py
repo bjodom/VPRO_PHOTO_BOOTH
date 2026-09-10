@@ -89,6 +89,11 @@ class ImageHandoffStore:
                 self._drop(token, self._entries[token])
         return len(stale)
 
+    def active_paths(self) -> set[Path]:
+        with self._lock:
+            return {entry.path for entry in self._entries.values()
+                    if entry.expires_at > time() and entry.downloads < entry.max_downloads}
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._entries)
@@ -132,9 +137,30 @@ PAGE_TEMPLATE = """<!doctype html>
 
 CAPTION_BLOCK = """
   <div class="caption" id="caption">{caption}</div>
-  <button onclick="navigator.clipboard.writeText(document.getElementById('caption').innerText)">
+    <button id="copy-caption" onclick="copyCaption()">
     Copy caption
   </button>
+    <p id="copy-status" role="status"></p>
+    <script>
+        async function copyCaption() {{
+            const text = document.getElementById('caption').innerText;
+            try {{
+                if (navigator.clipboard && window.isSecureContext) {{
+                    await navigator.clipboard.writeText(text);
+                }} else {{
+                    const selection = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(document.getElementById('caption'));
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    if (!document.execCommand('copy')) throw new Error('manual copy required');
+                }}
+                document.getElementById('copy-status').textContent = 'Caption copied';
+            }} catch (error) {{
+                document.getElementById('copy-status').textContent = 'Select the caption above, then choose Copy.';
+            }}
+        }}
+    </script>
 """
 
 

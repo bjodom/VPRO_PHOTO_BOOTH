@@ -1,6 +1,6 @@
-<#!
+<#
 .SYNOPSIS
-    Run the complete vPRO capture -> compose -> Juggernaut pipeline.
+    Start the persistent vPRO event kiosk.
 
 .DESCRIPTION
     This is the primary Windows launcher for the project. It keeps paths rooted at the repository,
@@ -20,6 +20,8 @@
 
 [CmdletBinding()]
 param(
+    [ValidateSet("kiosk", "social")]
+    [string]$Mode = "kiosk",
     [ValidateSet("openvino", "torch")]
     [string]$Backend = "openvino",
     [string]$ModelPath = "models/yolo26/yolo26x-pose_openvino_model",
@@ -56,12 +58,23 @@ param(
     [switch]$SkipGuided,
     [switch]$UseIntelProxy,
     [switch]$DownloadJuggernaut,
-    [switch]$Sync
+    [switch]$Sync,
+    [switch]$AllowModelDownloads,
+    [switch]$DryRun,
+    [ValidateRange(1, 60)]
+    [double]$PoseFps = 15,
+    [ValidateRange(1, 65535)]
+    [int]$KioskPort = 8000,
+    [string]$OutputDir = "outputs/kiosk",
+    [string]$DeliveryAdvertiseHost,
+    [ValidateRange(0.25, 168)]
+    [double]$RetentionHours = 24
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-Set-Location -LiteralPath $PSScriptRoot
+Push-Location -LiteralPath $PSScriptRoot
+try {
 
 function Assert-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -79,6 +92,12 @@ Assert-Path $ModelPath "YOLO model path"
 Assert-Path $RmbgModelDir "RMBG model directory"
 Assert-Path $SceneImage "scene image"
 Assert-Path $PropImage "prop image"
+if ($Mode -eq "kiosk" -and $Backend -ne "openvino") {
+    throw "Kiosk mode requires OpenVINO. Use -Mode social for other backends."
+}
+if ($Mode -eq "kiosk" -and $SkipGuided) {
+    throw "Event kiosk requires generation. Use -Mode social -SkipGuided for diagnostic composition."
+}
 
 if ($UseIntelProxy) {
     $ProxyScript = Join-Path (Split-Path -Parent $PSScriptRoot) "proxy.ps1"
@@ -89,7 +108,7 @@ if ($UseIntelProxy) {
 if ($Sync) {
     Assert-Command "uv"
     Write-Host "Syncing project dependencies..." -ForegroundColor Cyan
-    & uv sync
+    & uv sync --extra gen --extra kiosk
     if ($LASTEXITCODE -ne 0) {
         throw "uv sync failed with exit code $LASTEXITCODE"
     }
@@ -107,7 +126,6 @@ if ($DownloadJuggernaut) {
 }
 
 $Arguments = @(
-    "--run-social-pipeline",
     "--backend", $Backend,
     "--model-path", $ModelPath,
     "--device", $Device,
@@ -131,21 +149,41 @@ $Arguments = @(
     "--juggernaut-preset", $JuggernautPreset
 )
 
+if ($Mode -eq "kiosk") {
+    $Arguments += @("--kiosk", "--kiosk-pose-fps", $PoseFps,
+        "--kiosk-port", $KioskPort, "--kiosk-output-retention-hours", $RetentionHours,
+        "--kiosk-output-dir", $OutputDir, "--open-browser")
+    if ($DeliveryAdvertiseHost) {
+        $Arguments += @("--delivery-advertise-host", $DeliveryAdvertiseHost)
+    }
+} else {
+    $Arguments += "--run-social-pipeline"
+}
+
 if ($Npu) { $Arguments += "--npu" }
 if ($CaptureAutoStart) { $Arguments += "--capture-auto-start" }
-if ($JuggernautLocalOnly) { $Arguments += "--juggernaut-local-only" }
+if ($JuggernautLocalOnly -or -not $AllowModelDownloads) { $Arguments += "--juggernaut-local-only" }
 if ($JuggernautNoPreload) { $Arguments += "--juggernaut-no-preload" }
 if ($SkipGuided) { $Arguments += "--juggernaut-skip-guided" }
-if ($JuggernautSteps -gt 0) { $Arguments += @("--juggernaut-steps", $JuggernautSteps) }
-if ($JuggernautGuidanceScale -gt 0) {
+if ($PSBoundParameters.ContainsKey("JuggernautSteps")) { $Arguments += @("--juggernaut-steps", $JuggernautSteps) }
+if ($PSBoundParameters.ContainsKey("JuggernautGuidanceScale")) {
     $Arguments += @("--juggernaut-guidance-scale", $JuggernautGuidanceScale)
 }
-if ($JuggernautGuidedStrength -gt 0) {
+if ($PSBoundParameters.ContainsKey("JuggernautGuidedStrength")) {
     $Arguments += @("--juggernaut-guided-strength", $JuggernautGuidedStrength)
 }
 if ($null -ne $JuggernautSeed) { $Arguments += @("--juggernaut-seed", $JuggernautSeed) }
 
-Write-Host "Starting vPRO social pipeline..." -ForegroundColor Green
+if ($DryRun) {
+    $Arguments | ConvertTo-Json
+    return
+}
+Write-Host "Starting vPRO $Mode..." -ForegroundColor Green
 $Python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+& $Python -c "import cv2, openvino, optimum.intel, diffusers, fastapi, uvicorn, segno"
+if ($LASTEXITCODE -ne 0) { throw "Dependencies are incomplete. Run .\run.ps1 -Sync before the event." }
 & $Python -m vpro.cli @Arguments
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) { throw "vPRO exited with code $LASTEXITCODE" }
+} finally {
+    Pop-Location
+}

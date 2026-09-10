@@ -8,6 +8,7 @@ frame rather than a queued backlog, which is what a live preview wants.
 from __future__ import annotations
 
 import threading
+import math
 from dataclasses import dataclass
 from time import perf_counter, sleep
 from typing import Any
@@ -70,7 +71,7 @@ class CameraStream:
     ) -> None:
         if rotate not in VALID_ROTATIONS:
             raise ValueError(f"rotate must be one of {VALID_ROTATIONS}, got {rotate}")
-        if pose_fps < 0:
+        if not math.isfinite(pose_fps) or pose_fps < 0:
             raise ValueError("pose_fps must be >= 0")
         self.index = index
         self.width = width
@@ -96,15 +97,29 @@ class CameraStream:
         self._opened = threading.Event()
         self._last_pose_at = 0.0
         self._last_bbox: tuple[int, int, int, int] | None = None
+        self._last_result: Any = None
+        self._preview_thread: threading.Thread | None = None
+        self._frame_time = 0.0
+        self._frame_sequence = 0
+        self._subscribers = 0
+        self.inference_lock = threading.Lock()
 
     # -- lifecycle -----------------------------------------------------------------
 
     def start(self) -> CameraStream:
-        if self._thread is not None:
+        if self._thread is not None and self._thread.is_alive():
             return self
         self._stop.clear()
+        self._opened.clear()
+        self._last_result = None
+        with self._lock:
+            self._frame = None
+            self._jpeg = None
+            self._frame_time = 0
         self._thread = threading.Thread(target=self._run, name="vpro-camera", daemon=True)
         self._thread.start()
+        self._preview_thread = threading.Thread(target=self._preview_loop, name="vpro-preview", daemon=True)
+        self._preview_thread.start()
         return self
 
     def wait_until_open(self, timeout: float = 10.0) -> bool:
@@ -112,9 +127,13 @@ class CameraStream:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._frame_ready:
+            self._frame_ready.notify_all()
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=5)
+        if self._preview_thread is not None:
+            self._preview_thread.join(timeout=5)
 
     def __enter__(self) -> CameraStream:
         return self.start()
@@ -128,13 +147,15 @@ class CameraStream:
 
     # -- readers -------------------------------------------------------------------
 
-    def latest_frame(self) -> np.ndarray | None:
+    def latest_frame(self, max_age: float | None = None) -> np.ndarray | None:
         """Most recent raw BGR frame, copied so callers cannot mutate the buffer.
 
         Deliberately unmirrored: the preview is flipped so guests can adjust naturally, but the
         delivered photo should not be, or any text on their clothing comes out reversed.
         """
         with self._lock:
+            if max_age is not None and perf_counter() - self._frame_time > max_age:
+                return None
             return None if self._frame is None else self._frame.copy()
 
     def latest_jpeg(self) -> bytes | None:
@@ -148,14 +169,53 @@ class CameraStream:
 
     def mjpeg_frames(self, boundary: str = "frame"):
         """Yield multipart chunks for an MJPEG response."""
+        with self._lock:
+            self._subscribers += 1
+        try:
+            while not self._stop.is_set():
+                payload = self.wait_for_jpeg(timeout=1.0)
+                if payload is None:
+                    continue
+                yield (
+                    f"--{boundary}\r\nContent-Type: image/jpeg\r\n"
+                    f"Content-Length: {len(payload)}\r\n\r\n"
+                ).encode("ascii") + payload + b"\r\n"
+        finally:
+            with self._lock:
+                self._subscribers -= 1
+
+    def _preview_loop(self) -> None:
+        import cv2
+
+        sequence = -1
         while not self._stop.is_set():
-            payload = self.wait_for_jpeg(timeout=1.0)
-            if payload is None:
+            with self._frame_ready:
+                self._frame_ready.wait_for(
+                    lambda: self._stop.is_set() or self._frame_sequence != sequence, timeout=0.5
+                )
+                sequence = self._frame_sequence
+                frame = None if self._frame is None else self._frame.copy()
+                visible = self._subscribers > 0
+            if frame is None or not visible:
+                self._stop.wait(0.02)
                 continue
-            yield (
-                f"--{boundary}\r\nContent-Type: image/jpeg\r\n"
-                f"Content-Length: {len(payload)}\r\n\r\n"
-            ).encode("ascii") + payload + b"\r\n"
+            try:
+                if self.annotate and self.pose_backend is not None:
+                    display = self._annotate(frame)
+                else:
+                    self._last_result = None
+                    display = cv2.flip(frame, 1) if self.mirror_preview else frame
+                height, width = display.shape[:2]
+                if max(height, width) > 1280:
+                    scale = 1280 / max(height, width)
+                    display = cv2.resize(display, (int(width * scale), int(height * scale)))
+                ok, encoded = cv2.imencode(".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
+                if ok:
+                    with self._frame_ready:
+                        self._jpeg = encoded.tobytes()
+                        self._frame_ready.notify_all()
+            except Exception as exc:
+                self.stats.last_error = f"preview failed: {exc}"
 
     # -- worker --------------------------------------------------------------------
 
@@ -189,28 +249,10 @@ class CameraStream:
                 # Rotate first: pose, framing and the stored capture all work in this orientation.
                 frame = rotate_frame(frame, self.rotate)
 
-                display = frame
-                if self.annotate and self.pose_backend is not None:
-                    now = perf_counter()
-                    if now - self._last_pose_at >= self.pose_interval:
-                        display = self._annotate(frame)
-                        self._last_pose_at = now
-                    else:
-                        display = frame
-                        if self.mirror_preview:
-                            display = cv2.flip(display, 1)
-                        if self.show_guide:
-                            display = self._draw_guide(display, self._last_bbox)
-                elif self.mirror_preview:
-                    display = cv2.flip(frame, 1)
-
-                encoded = cv2.imencode(
-                    ".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
-                )[1].tobytes()
-
                 with self._frame_ready:
                     self._frame = frame
-                    self._jpeg = encoded
+                    self._frame_time = perf_counter()
+                    self._frame_sequence += 1
                     self._frame_ready.notify_all()
 
                 self.stats.frames += 1
@@ -227,25 +269,29 @@ class CameraStream:
     def _annotate(self, frame: np.ndarray) -> np.ndarray:
         start = perf_counter()
         try:
-            results = self.pose_backend.predict(
-                {"source": frame, "device": self.pose_device, "verbose": False}
-            )
+            if start - self._last_pose_at >= self.pose_interval:
+                with self.inference_lock:
+                    results = self.pose_backend.predict(
+                        {"source": frame, "device": self.pose_device, "verbose": False}
+                    )
+                self._last_result = results[0] if isinstance(results, list) and results else None
+                self._last_pose_at = start
+                self.stats.inference_seconds = perf_counter() - start
         except Exception as exc:
             # A preview without skeletons beats a dead camera thread.
             self.stats.last_error = f"pose overlay failed: {exc}"
-            return frame
-        self.stats.inference_seconds = perf_counter() - start
+            self._last_result = None
 
-        display = frame
+        display = frame.copy()
         bbox = None
         has_lower_body: bool | None = None
-        if isinstance(results, list) and results:
+        if self._last_result is not None:
             # No class labels: they are drawn before the mirror flip, so they render backwards,
             # and "person 0.96" means nothing to a guest anyway.
-            display = results[0].plot(labels=False, conf=False)
-            bbox, index = _largest_person_bbox(results[0])
+            display = self._last_result.plot(img=display, labels=False, conf=False)
+            bbox, index = _largest_person_bbox(self._last_result)
             if index is not None:
-                has_lower_body = _has_lower_body(results[0], index)
+                has_lower_body = _has_lower_body(self._last_result, index)
         self._last_bbox = bbox
 
         height, width = frame.shape[:2]

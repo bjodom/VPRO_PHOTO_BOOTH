@@ -73,6 +73,8 @@ class RMBGRuntime:
         import cv2
 
         out = np.array(raw_output)
+        if not np.isfinite(out).all():
+            raise RuntimeError("RMBG inference returned non-finite values; subject segmentation failed.")
         if out.ndim == 4:
             out = out[0, 0]
         elif out.ndim == 3:
