@@ -18,7 +18,13 @@ YOLO26 runtime behavior mirrors the local demo at `C:\Users\bjodom\ai_projects\u
 
 ```powershell
 uv sync
-uv run python main.py --backend openvino --model-path models
+
+# Get Juggernaut XL for the final guided render. This downloads the OpenVINO
+# Juggernaut XL model into the local Hugging Face cache for reuse.
+uvx --from huggingface_hub hf download OpenVINO/Juggernaut-XL-v9-fp16-ov
+
+# Run the complete app flow using the cloned repository layout.
+uv run vpro --run-social-pipeline --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_model --device intel:gpu --camera-index 0 --compose-scene-image assets/scenes/portrait_scene_1080x1350.jpg --compose-prop-image assets/props/lenovo.laptop.png --juggernaut-model-id OpenVINO/Juggernaut-XL-v9-fp16-ov
 ```
 
 ## Install Optional Backend Extras
