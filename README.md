@@ -27,6 +27,32 @@ uvx --from huggingface_hub hf download OpenVINO/Juggernaut-XL-v9-fp16-ov
 uv run vpro --run-social-pipeline --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_model --device intel:gpu --camera-index 0 --compose-scene-image assets/scenes/portrait_scene_1080x1350.jpg --compose-prop-image assets/props/lenovo.laptop.png --juggernaut-model-id OpenVINO/Juggernaut-XL-v9-fp16-ov
 ```
 
+For the complete Windows flow, use the root launcher. After the project environment has been
+created with `uv sync` once, no `uv run` command is needed. The launcher uses the project's
+`.venv` directly. It captures a visitor, composes the
+deterministic portrait, runs the guided Juggernaut render, and falls back to the deterministic
+image if generation fails:
+
+```powershell
+.\run.ps1
+```
+
+Useful launcher options:
+
+```powershell
+# Enable the Intel proxy, synchronize dependencies, and ensure Juggernaut is downloaded.
+.\run.ps1 -UseIntelProxy -Sync -DownloadJuggernaut
+
+# Run unattended capture and use the NPU for YOLO and RMBG.
+.\run.ps1 -CaptureAutoStart -Npu
+
+# Use a lower-cost identity-preserving render profile.
+.\run.ps1 -JuggernautPreset identity-lock
+```
+
+Run `.\run.ps1 -?` to see all launcher parameters. The lower-level `uv run vpro` commands below
+remain available for individual smoke tests and development workflows.
+
 ## Install Optional Backend Extras
 
 Install PyTorch extra:
