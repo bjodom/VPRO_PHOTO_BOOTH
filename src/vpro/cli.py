@@ -213,9 +213,9 @@ def build_parser() -> ArgumentParser:
         "--npu",
         action="store_true",
         help=(
-            "Run the vision models (YOLO pose, RMBG) on the Intel NPU instead of the GPU. "
-            "Juggernaut stays on the GPU; SDXL is not a practical NPU workload. "
-            "Explicit --device / --rmbg-device values still win."
+            "Run YOLO pose on the Intel NPU while leaving RMBG on its configured device "
+            "(AUTO selects the GPU on this system). Juggernaut stays on the GPU; explicit "
+            "--device / --rmbg-device values still win."
         ),
     )
     parser.add_argument(
@@ -1256,8 +1256,6 @@ def _apply_npu_preference(parser: ArgumentParser, args) -> None:
 
     if args.device == parser.get_default("device"):
         args.device = "intel:npu"
-    if args.rmbg_device == parser.get_default("rmbg_device"):
-        args.rmbg_device = "NPU"
     print(f"NPU mode: yolo={args.device}, rmbg={args.rmbg_device}, juggernaut={args.juggernaut_device}")
 
 

@@ -33,6 +33,9 @@ created with `uv sync` once, no `uv run` command is needed. The launcher uses th
 deterministic portrait, runs the guided Juggernaut render, and falls back to the deterministic
 image if generation fails:
 
+The launcher defaults are optimized for this system: YOLO26 on `intel:npu`, RMBG on `GPU`, and
+Juggernaut on `GPU`. Override them only when testing another hardware configuration.
+
 ```powershell
 .\run.ps1
 ```
@@ -43,8 +46,8 @@ Useful launcher options:
 # Enable the Intel proxy, synchronize dependencies, and ensure Juggernaut is downloaded.
 .\run.ps1 -UseIntelProxy -Sync -DownloadJuggernaut
 
-# Run unattended capture and use the NPU for YOLO and RMBG.
-.\run.ps1 -CaptureAutoStart -Npu
+# Run unattended capture with the optimized default device placement.
+.\run.ps1 -CaptureAutoStart
 
 # Use a lower-cost identity-preserving render profile.
 .\run.ps1 -JuggernautPreset identity-lock

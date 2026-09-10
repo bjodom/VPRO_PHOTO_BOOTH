@@ -15,7 +15,7 @@
     .\run.ps1 -UseIntelProxy -Sync -DownloadJuggernaut -CaptureAutoStart
 
 .EXAMPLE
-    .\run.ps1 -Device intel:npu -RmbgDevice NPU -JuggernautPreset identity-lock
+    .\run.ps1 -Device intel:gpu -RmbgDevice GPU -JuggernautPreset identity-lock
 #>
 
 [CmdletBinding()]
@@ -23,8 +23,8 @@ param(
     [ValidateSet("openvino", "torch")]
     [string]$Backend = "openvino",
     [string]$ModelPath = "models/yolo26/yolo26x-pose_openvino_model",
-    [string]$Device = "intel:gpu",
-    [string]$RmbgDevice = "AUTO",
+    [string]$Device = "intel:npu",
+    [string]$RmbgDevice = "GPU",
     [string]$JuggernautDevice = "GPU",
     [string]$JuggernautModelId = "OpenVINO/Juggernaut-XL-v9-fp16-ov",
     [ValidateSet("fast", "balanced", "high")]

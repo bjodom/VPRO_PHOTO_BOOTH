@@ -244,7 +244,7 @@ because it works regardless of device topology; NPU offload is complementary, no
 | Correctness | `_is_degenerate_image` / `_render_with_black_guard`; black guide rejection |
 | Throughput | `JuggernautRunner` — resident pipeline on a worker thread |
 | Kiosk | Load during capture; warmup deferred until the camera is released |
-| Kiosk | `--npu` routes YOLO pose and RMBG to the NPU; Juggernaut stays on the GPU |
+| Kiosk | `--npu` routes YOLO pose to the NPU while RMBG stays on its configured device; Juggernaut stays on the GPU |
 | Tooling | Startup/render instrumentation, JSONL metrics, probe modes, brightness scan |
 
 ### 3.1 JuggernautRunner
@@ -296,10 +296,12 @@ capture=6.00 rmbg=2.00 compose=2.00 juggernaut=23.81 total=33.83
 
 `--juggernaut-no-preload` defers loading until after capture if it is ever needed.
 
-`--npu` moves the vision models off the GPU. It only overrides devices still at their defaults, so
-explicit `--device` / `--rmbg-device` values win, and it fails fast with the available device list
-if no NPU is present. Juggernaut is deliberately left on the GPU — SDXL is not a practical NPU
-workload.
+`--npu` moves YOLO pose off the GPU while leaving RMBG on its configured device. On the measured
+development system, RMBG on NPU was ~891 ms p50 versus ~76 ms on GPU, so moving RMBG to the NPU
+made the pipeline substantially slower. It only overrides YOLO when `--device` is still at its
+default, explicit `--device` / `--rmbg-device` values win, and it fails fast with the available
+device list if no NPU is present. Juggernaut is deliberately left on the GPU — SDXL is not a
+practical NPU workload.
 
 ### 3.3 Deterministic pipeline reuse
 
