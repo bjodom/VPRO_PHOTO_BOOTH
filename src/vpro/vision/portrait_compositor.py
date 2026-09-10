@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,24 @@ class CompositionResult:
     anchor_xy: tuple[int, int] | None
     #: Where subject and prop pixels landed on the canvas; inpainting locks these.
     coverage_mask: np.ndarray | None = None
+
+
+@lru_cache(maxsize=16)
+def _load_scene_canvas(scene_path: str, output_size: tuple[int, int]) -> np.ndarray:
+    scene = cv2.imread(scene_path, cv2.IMREAD_COLOR)
+    if scene is None:
+        raise RuntimeError(f"Could not read scene image: {scene_path}")
+    return cv2.resize(scene, output_size, interpolation=cv2.INTER_AREA)
+
+
+@lru_cache(maxsize=16)
+def _load_prop_image(prop_path: str) -> np.ndarray:
+    prop = cv2.imread(prop_path, cv2.IMREAD_UNCHANGED)
+    if prop is None:
+        raise RuntimeError(f"Could not read laptop prop image: {prop_path}")
+    if prop.ndim != 3 or prop.shape[2] != 4:
+        raise RuntimeError("Laptop prop image must be a BGRA/PNG with alpha channel.")
+    return prop
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -295,10 +314,7 @@ def compose_portrait(
     """Compose one primary subject into a portrait scene with deterministic placement."""
     canvas_w, canvas_h = output_size
 
-    scene = cv2.imread(str(scene_path), cv2.IMREAD_COLOR)
-    if scene is None:
-        raise RuntimeError(f"Could not read scene image: {scene_path}")
-    canvas = cv2.resize(scene, (canvas_w, canvas_h), interpolation=cv2.INTER_AREA)
+    canvas = _load_scene_canvas(str(scene_path.expanduser().resolve()), (canvas_w, canvas_h)).copy()
 
     alpha = cleaned_mask
     ys, xs = np.where(alpha > 12)
@@ -344,11 +360,7 @@ def compose_portrait(
 
     anchor_xy = (tx, ty)
 
-    prop = cv2.imread(str(prop_path), cv2.IMREAD_UNCHANGED)
-    if prop is None:
-        raise RuntimeError(f"Could not read laptop prop image: {prop_path}")
-    if prop.ndim != 3 or prop.shape[2] != 4:
-        raise RuntimeError("Laptop prop image must be a BGRA/PNG with alpha channel.")
+    prop = _load_prop_image(str(prop_path.expanduser().resolve()))
 
     # Size prop relative to visible subject width.
     target_prop_w = max(60, int(out_w * 0.30))

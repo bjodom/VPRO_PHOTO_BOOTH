@@ -55,6 +55,7 @@ class RunnerStatus:
     queue_depth: int
     startup_seconds: float | None
     error: str | None
+    queue_rejections: int
 
 
 class JuggernautRunner:
@@ -97,6 +98,7 @@ class JuggernautRunner:
         self._startup_seconds: float | None = None
         self._renders_served = 0
         self._failures = 0
+        self._queue_rejections = 0
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -158,6 +160,7 @@ class JuggernautRunner:
         try:
             self._queue.put_nowait((request, future, perf_counter()))
         except queue.Full as exc:
+            self._queue_rejections += 1
             raise RuntimeError(
                 f"Juggernaut render queue is full ({self._queue.maxsize}); try again shortly."
             ) from exc
@@ -193,6 +196,7 @@ class JuggernautRunner:
             queue_depth=self._queue.qsize(),
             startup_seconds=self._startup_seconds,
             error=self._error,
+            queue_rejections=self._queue_rejections,
         )
 
     # -- worker --------------------------------------------------------------------

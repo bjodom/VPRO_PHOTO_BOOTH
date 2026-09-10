@@ -42,6 +42,23 @@ uv run vpro --backend openvino --model-path models
 uv run vpro --backend torch --model-path models
 ```
 
+## Kiosk Performance Controls
+
+The kiosk keeps YOLO, RMBG, and Juggernaut resources resident for the life of the process. RMBG is
+loaded and warmed once at startup, while static scene and prop assets are cached between guests.
+The preview camera continues capturing at the configured camera rate, but YOLO pose inference is
+limited to 15 FPS by default so the live preview leaves GPU headroom for other work.
+
+Tune the pose rate and output retention window for a target booth:
+
+```powershell
+uv run vpro --kiosk --kiosk-pose-fps 10 --kiosk-output-retention-hours 48
+```
+
+The kiosk state endpoint reports the latest deterministic-pipeline timings and Juggernaut queue
+rejections. Re-run `tests/gpu_contention_test.py` on each target hardware configuration; integrated
+and discrete Intel GPUs can behave differently under concurrent camera and diffusion workloads.
+
 ## OpenVINO Smoke Test
 
 Run a short webcam inference smoke test (camera open + model inference loop):

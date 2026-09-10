@@ -6,6 +6,8 @@ Lives here rather than in cli.py so both entry points use one implementation.
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
+from typing import Any
 
 import numpy as np
 
@@ -33,6 +35,8 @@ def compose_portrait_from_image(
     mask_quality: str,
     verbose: bool = True,
     coverage_output_path: Path | None = None,
+    rmbg_runtime: Any | None = None,
+    timings: dict[str, float] | None = None,
 ) -> Path:
     import cv2
 
@@ -56,14 +60,21 @@ def compose_portrait_from_image(
     if source is None:
         raise RuntimeError(f"Could not read input image: {input_image_path}")
 
-    rmbg_runtime = load_rmbg_runtime(rmbg_model_dir, device=rmbg_device)
+    rmbg_start = perf_counter()
+    if rmbg_runtime is None:
+        rmbg_runtime = load_rmbg_runtime(rmbg_model_dir, device=rmbg_device)
     raw_mask, foreground = rmbg_runtime.segment(source)
+    if timings is not None:
+        timings["rmbg_seconds"] = perf_counter() - rmbg_start
 
+    yolo_start = perf_counter()
     yolo_results = backend.predict({"source": source, "device": yolo_device, "verbose": False})
     if not isinstance(yolo_results, list) or not yolo_results:
         raise RuntimeError("YOLO returned no results for portrait composition.")
 
     result = yolo_results[0]
+    if timings is not None:
+        timings["yolo_seconds"] = perf_counter() - yolo_start
     try:
         primary = select_primary_subject(result, source.shape[:2])
     except RuntimeError:
@@ -84,6 +95,7 @@ def compose_portrait_from_image(
     )
     foreground[:, :, 3] = clean_mask
 
+    compose_start = perf_counter()
     composed = compose_portrait(
         source_bgr=source,
         foreground_bgra=foreground,
@@ -100,6 +112,8 @@ def compose_portrait_from_image(
     if coverage_output_path is not None and composed.coverage_mask is not None:
         coverage_output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(coverage_output_path), composed.coverage_mask)
+    if timings is not None:
+        timings["composition_seconds"] = perf_counter() - compose_start
     if verbose:
         anchor = composed.anchor_xy
         anchor_text = "none" if anchor is None else f"{anchor[0]},{anchor[1]}"

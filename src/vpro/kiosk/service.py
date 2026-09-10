@@ -29,6 +29,7 @@ class KioskConfig:
     camera_index: int = 0
     capture_width: int = 1920
     capture_height: int = 1080
+    pose_fps: float = 15.0
     #: Clockwise correction for a camera mounted on its side; 90 or 270 gives a portrait frame.
     capture_rotate: int = 0
 
@@ -55,6 +56,7 @@ class KioskConfig:
     opaque_threshold: int = 250
     mask_erode_px: int = 2
     mask_feather_px: int = 8
+    output_retention_hours: float = 24.0
 
     delivery_channel: str = "local-qr"
     delivery_host: str = "0.0.0.0"
@@ -73,6 +75,8 @@ class ServiceStatus:
     renders_served: int = 0
     last_error: str | None = None
     startup_seconds: float | None = None
+    queue_rejections: int = 0
+    last_pipeline_timings: dict[str, float] = field(default_factory=dict)
 
 
 class KioskService:
@@ -86,6 +90,7 @@ class KioskService:
         self.runner: Any = None
         self.delivery: Any = None
         self._backend: Any = None
+        self._rmbg_runtime: Any = None
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._warmed = False
@@ -100,6 +105,14 @@ class KioskService:
         self._backend = build_backend("openvino")
         self._backend.load_model(self.config.yolo_model_path)
 
+        from ..vision.rmbg_runtime import load_rmbg_runtime
+
+        self._rmbg_runtime = load_rmbg_runtime(
+            self.config.rmbg_model_dir, device=self.config.rmbg_device
+        )
+        self._rmbg_runtime.warmup(runs=1)
+        self._cleanup_old_outputs()
+
         self.camera = CameraStream(
             index=self.config.camera_index,
             width=self.config.capture_width,
@@ -107,6 +120,7 @@ class KioskService:
             pose_backend=self._backend,
             pose_device=self.config.yolo_device,
             rotate=self.config.capture_rotate,
+            pose_fps=self.config.pose_fps,
         ).start()
 
         self.delivery = build_delivery(
@@ -169,6 +183,7 @@ class KioskService:
             self.status.renderer_state = status.state
             self.status.renders_served = status.renders_served
             self.status.startup_seconds = status.startup_seconds
+            self.status.queue_rejections = status.queue_rejections
 
         return {
             "state": session.state.value,
@@ -190,6 +205,8 @@ class KioskService:
                 "renderer_state": self.status.renderer_state,
                 "renders_served": self.status.renders_served,
                 "startup_seconds": self.status.startup_seconds,
+                "queue_rejections": self.status.queue_rejections,
+                "pipeline_timings": dict(self.status.last_pipeline_timings),
                 "last_error": self.status.last_error,
             },
         }
@@ -334,6 +351,7 @@ class KioskService:
                 np.full((config.height, config.width, 3), 128, dtype=np.uint8),
             )
 
+        timings: dict[str, float] = {}
         started = perf_counter()
         composed = compose_portrait_from_image(
             backend=self._backend,
@@ -347,7 +365,11 @@ class KioskService:
             mask_quality=config.mask_quality,
             verbose=False,
             coverage_output_path=coverage_path,
+            rmbg_runtime=self._rmbg_runtime,
+            timings=timings,
         )
+        timings["compose_total_seconds"] = perf_counter() - started
+        self.status.last_pipeline_timings = dict(timings)
         print(f"[kiosk] compose {perf_counter() - started:.2f}s -> {composed}")
 
         if self._abandoned(session_id):
@@ -373,6 +395,8 @@ class KioskService:
                     mask_image_path=mask_path,
                 )
             )
+            timings["juggernaut_seconds"] = perf_counter() - started
+            self.status.last_pipeline_timings = dict(timings)
             print(f"[kiosk] render {perf_counter() - started:.2f}s ok={result.ok}")
             if not result.ok or result.output_path is None:
                 # The deterministic compose is a real image, so hand that over instead of failing.
@@ -388,6 +412,17 @@ class KioskService:
             DeliveryRequest(image_path=final_path, caption=CAPTION)
         )
         return final_path, delivery
+
+    def _cleanup_old_outputs(self) -> None:
+        if self.config.output_retention_hours <= 0:
+            return
+        cutoff = datetime.now().timestamp() - (self.config.output_retention_hours * 3600.0)
+        for path in self.config.output_dir.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"[kiosk] could not remove stale output {path}: {exc}")
 
     def _build_inpaint_mask(self, coverage_path: Path, stamp: str) -> Path:
         """White is repainted, so invert the guest's opaque coverage.

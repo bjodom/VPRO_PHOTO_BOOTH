@@ -155,6 +155,18 @@ def build_parser() -> ArgumentParser:
     )
     parser.add_argument("--kiosk-port", type=int, default=8000, help="Kiosk UI port.")
     parser.add_argument(
+        "--kiosk-pose-fps",
+        type=float,
+        default=15.0,
+        help="Maximum YOLO pose inference rate during kiosk preview; 0 means every frame.",
+    )
+    parser.add_argument(
+        "--kiosk-output-retention-hours",
+        type=float,
+        default=24.0,
+        help="Delete kiosk output files older than this at startup; 0 disables cleanup.",
+    )
+    parser.add_argument(
         "--kiosk-no-generation",
         action="store_true",
         help="Skip Juggernaut and deliver the deterministic compose; useful for UI work.",
@@ -929,6 +941,7 @@ def _run_social_pipeline(args) -> None:
         delay_seconds=args.capture_delay_seconds,
         capture_width=args.capture_width,
         capture_height=args.capture_height,
+        pose_fps=args.kiosk_pose_fps,
         yolo_preview_backend=backend,
         yolo_device=args.device,
         auto_start=args.capture_auto_start,
@@ -1157,6 +1170,7 @@ def _run_kiosk(args) -> None:
         delivery_port=args.delivery_port,
         delivery_advertise_host=args.delivery_advertise_host,
         enable_generation=not args.kiosk_no_generation,
+        output_retention_hours=args.kiosk_output_retention_hours,
     )
     # --model-path defaults to the generic "models" dir, which is not a YOLO export directory.
     if args.model_path != Path("models"):

@@ -66,9 +66,12 @@ class CameraStream:
         jpeg_quality: int = JPEG_QUALITY,
         mirror_preview: bool = True,
         rotate: int = 0,
+        pose_fps: float = 15.0,
     ) -> None:
         if rotate not in VALID_ROTATIONS:
             raise ValueError(f"rotate must be one of {VALID_ROTATIONS}, got {rotate}")
+        if pose_fps < 0:
+            raise ValueError("pose_fps must be >= 0")
         self.index = index
         self.width = width
         self.height = height
@@ -78,6 +81,7 @@ class CameraStream:
         self.jpeg_quality = jpeg_quality
         self.mirror_preview = mirror_preview
         self.rotate = rotate
+        self.pose_interval = 0.0 if pose_fps == 0 else 1.0 / pose_fps
 
         self.stats = CameraStats()
         self.framing: FramingFeedback = evaluate_framing(None, 0, 0)
@@ -90,6 +94,8 @@ class CameraStream:
         self._jpeg: bytes | None = None
         self._frame_ready = threading.Condition(self._lock)
         self._opened = threading.Event()
+        self._last_pose_at = 0.0
+        self._last_bbox: tuple[int, int, int, int] | None = None
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -185,7 +191,16 @@ class CameraStream:
 
                 display = frame
                 if self.annotate and self.pose_backend is not None:
-                    display = self._annotate(frame)
+                    now = perf_counter()
+                    if now - self._last_pose_at >= self.pose_interval:
+                        display = self._annotate(frame)
+                        self._last_pose_at = now
+                    else:
+                        display = frame
+                        if self.mirror_preview:
+                            display = cv2.flip(display, 1)
+                        if self.show_guide:
+                            display = self._draw_guide(display, self._last_bbox)
                 elif self.mirror_preview:
                     display = cv2.flip(frame, 1)
 
@@ -231,6 +246,7 @@ class CameraStream:
             bbox, index = _largest_person_bbox(results[0])
             if index is not None:
                 has_lower_body = _has_lower_body(results[0], index)
+        self._last_bbox = bbox
 
         height, width = frame.shape[:2]
         self.framing = evaluate_framing(bbox, width, height, has_lower_body)

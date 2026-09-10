@@ -101,6 +101,8 @@ def test_state_endpoint(tmp: Path) -> None:
     check("scene has label", "label" in body["scenes"][0])
     check("idle has no timer", body["seconds_remaining"] is None)
     check("reports status", "camera_open" in body["status"])
+    check("reports queue rejections", "queue_rejections" in body["status"])
+    check("reports pipeline timings", "pipeline_timings" in body["status"])
 
 
 def test_full_flow_through_http(tmp: Path) -> None:

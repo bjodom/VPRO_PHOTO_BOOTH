@@ -301,6 +301,26 @@ explicit `--device` / `--rmbg-device` values win, and it fails fast with the ava
 if no NPU is present. Juggernaut is deliberately left on the GPU — SDXL is not a practical NPU
 workload.
 
+### 3.3 Deterministic pipeline reuse
+
+The kiosk loads and warms RMBG once during startup rather than compiling it for every guest.
+`compose_portrait_from_image` accepts an injected runtime for the kiosk path while retaining
+one-shot construction for CLI commands. Scene canvases and prop PNGs are cached by resolved path
+and output size. The composition path records `rmbg_seconds`, `yolo_seconds`,
+`composition_seconds`, `compose_total_seconds`, and `juggernaut_seconds` in the kiosk status
+snapshot so steady-state measurements can distinguish model work from image processing.
+
+Pose inference is capped at 15 FPS by default (`--kiosk-pose-fps`) while camera capture and MJPEG
+encoding continue at the camera rate. This reduces GPU contention without making the preview feel
+stale. The rate can be set to zero to restore inference on every frame.
+
+Kiosk output files older than 24 hours are removed at startup by default
+(`--kiosk-output-retention-hours`). Set the value to zero to disable cleanup. Juggernaut queue
+rejections are counted and exposed in the kiosk status response for operational monitoring.
+
+For a steady-state booth benchmark, run `tests/kiosk_flow_test.py --runs 5` against a running kiosk
+and compare the per-guest elapsed times with the `pipeline_timings` values from `/api/state`.
+
 Failure path verified: a black guide raises inside the worker, the result returns `ok=False`, and
 the deterministic compose is delivered instead.
 

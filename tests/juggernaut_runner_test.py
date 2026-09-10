@@ -195,6 +195,7 @@ def test_queue_full_is_rejected_fast() -> None:
         except RuntimeError as exc:
             overflowed = "queue is full" in str(exc)
         check("full queue rejects rather than blocking", overflowed)
+        check("queue rejection is counted", runner.status().queue_rejections >= 1)
 
 
 def test_cancelled_request_is_skipped() -> None:
