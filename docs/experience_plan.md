@@ -27,7 +27,7 @@ Primary goals:
 - Clear progress and retry states
 
 ### Capture + Vision Layer
-- Webcam capture target: 2560x1440 (2K) when available; fallback to 1920x1080 minimum
+- Webcam capture target: 1920x1080, matching the C920's native resolution to reduce memory use
 - Single-frame extraction from live feed for deterministic rendering input
 - Person background removal and alpha matting (RMBG v1.4)
 - Pose/keypoint estimation for hand location (YOLO26 keypoint model)

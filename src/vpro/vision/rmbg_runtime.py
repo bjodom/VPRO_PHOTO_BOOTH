@@ -9,7 +9,7 @@ import numpy as np
 class RMBGRuntime:
     """Minimal OpenVINO runtime wrapper for RMBG-style single-image inference."""
 
-    def __init__(self, model_dir: Path, device: str = "AUTO") -> None:
+    def __init__(self, model_dir: Path, device: str = "CPU") -> None:
         import openvino as ov
 
         self.model_dir = model_dir
@@ -138,7 +138,7 @@ def validate_rmbg_assets(path: Path) -> Path:
     return model_dir
 
 
-def load_rmbg_runtime(path: Path, device: str = "AUTO") -> RMBGRuntime:
+def load_rmbg_runtime(path: Path, device: str = "CPU") -> RMBGRuntime:
     model_dir = validate_rmbg_assets(path)
     runtime = RMBGRuntime(model_dir=model_dir, device=device)
     return runtime

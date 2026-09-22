@@ -9,12 +9,19 @@ try {
     if ('--kiosk' -notin $arguments -or '--juggernaut-local-only' -notin $arguments) {
         throw 'Launcher must default to offline kiosk mode'
     }
+    if ($arguments[[array]::IndexOf($arguments, '--rmbg-device') + 1] -ne 'CPU') {
+        throw 'Launcher must default RMBG to CPU'
+    }
+    $gpu = & .\run.ps1 -RmbgDevice GPU -DryRun | ConvertFrom-Json
+    if ($gpu[[array]::IndexOf($gpu, '--rmbg-device') + 1] -ne 'GPU') {
+        throw 'Launcher must preserve the explicit RMBG GPU override'
+    }
     $social = & .\run.ps1 -Mode social -DryRun -JuggernautGuidedStrength 0 | ConvertFrom-Json
     if ('--run-social-pipeline' -notin $social -or '--juggernaut-guided-strength' -notin $social) {
         throw 'Diagnostic mode or explicit overrides were lost'
     }
     foreach ($test in @('performance_recommendations_test', 'kiosk_app_test', 'kiosk_session_test',
-        'kiosk_framing_test', 'juggernaut_runner_test', 'delivery_test')) {
+        'kiosk_framing_test', 'juggernaut_runner_test', 'delivery_test', 'pose_device_test')) {
         & .\.venv\Scripts\python.exe "tests/$test.py"
         if ($LASTEXITCODE -ne 0) { throw "$test failed" }
     }

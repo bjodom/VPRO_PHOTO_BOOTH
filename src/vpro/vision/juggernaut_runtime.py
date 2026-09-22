@@ -135,8 +135,14 @@ def load_juggernaut_pipeline(
     openvino_cache_dir: Path | None = None,
     timings: dict[str, float] | None = None,
     task: str = TASK_TEXT2IMG,
+    vae_precision_hint: str | None = None,
 ) -> Any:
-    """Load and compile the pipeline; `timings`, if given, is filled with per-phase seconds."""
+    """Load and compile the pipeline; `timings`, if given, is filled with per-phase seconds.
+
+    `vae_precision_hint`, e.g. "f32", forces only the VAE encoder/decoder to that precision to
+    work around the fp16 VAE overflow that produces all-black frames on some GPUs, while leaving
+    the (much larger) UNet and text encoders at their default precision to keep the cost small.
+    """
     if task not in (TASK_TEXT2IMG, TASK_IMG2IMG, TASK_INPAINT):
         raise ValueError(
             f"task must be one of '{TASK_TEXT2IMG}', '{TASK_IMG2IMG}', '{TASK_INPAINT}', got {task!r}"
@@ -200,6 +206,13 @@ def load_juggernaut_pipeline(
         f"({type(pipeline).__name__}).",
         flush=True,
     )
+
+    if vae_precision_hint:
+        for vae_name in ("vae_encoder", "vae_decoder"):
+            vae_component = getattr(pipeline, vae_name, None)
+            if vae_component is not None:
+                vae_component.ov_config["INFERENCE_PRECISION_HINT"] = vae_precision_hint
+        print(f"VAE encoder/decoder forced to precision {vae_precision_hint!r}.", flush=True)
 
     components = getattr(pipeline, "components", {})
     compile_total = 0.0

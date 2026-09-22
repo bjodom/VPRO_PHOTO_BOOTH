@@ -29,8 +29,10 @@ The launcher uses `.venv` directly, defaults to offline model loading, and insta
 and `kiosk` extras when `-Sync` is requested. Local YOLO and RMBG XML/BIN artifacts and the laptop
 prop must already be present. The browser is at http://127.0.0.1:8000 by default.
 
-Your selected device defaults are YOLO26 `intel:npu`, RMBG `GPU`, and Juggernaut `GPU`.
-This is a configured deployment profile, not a claim that it is optimal on every Intel system.
+Your selected device defaults are YOLO26 `intel:npu`, RMBG `CPU`, and Juggernaut `GPU`.
+RMBG stays off the generation GPU to avoid shared-GPU contention. Use `-RmbgDevice GPU`
+only as an explicit override. This is a deployment profile, not a claim that it is optimal
+on every Intel system.
 The renderer loads and warms before the first guest can start. The normal kiosk uses inpainting;
 historical 5-6 second img2img measurements are not an established kiosk latency guarantee.
 
@@ -68,6 +70,32 @@ specific places may be approximate because no online geographic lookup is perfor
 Run the hardware-free regression gate with `.\tests\cli_pipeline_test.ps1`.
 Then follow [the event checklist](docs/event_readiness.md) on the actual booth and guest network.
 Passing unit tests does not certify camera quality, generated likeness, or phone connectivity.
+
+### RMBG GPU Regression
+
+Stop the kiosk and other inference workloads first. Using a saved photo with a visible person,
+run the opt-in shared-GPU regression (replace `saved-photo.jpg` with the actual path):
+
+```powershell
+.\.venv\Scripts\python.exe tests/rmbg_generation_test.py --image saved-photo.jpg
+
+# Separate-process control: same photo, seed, and renders; only RMBG moves to CPU.
+.\.venv\Scripts\python.exe tests/rmbg_generation_test.py --image saved-photo.jpg --rmbg-device CPU
+```
+
+The test keeps RMBG resident, checks its raw output before Juggernaut loading, after loading,
+after warmup, and after each of three inpainting renders (including the last). It uses the
+production runtimes, fixed seed, 30 steps, and 1080x1350 output, without retries masking failures.
+It uses cached models only and never opens the camera. Allow several minutes per invocation.
+It isolates RMBG/Juggernaut coexistence, not the full kiosk's YOLO, composition, or delivery flow.
+
+Each invocation creates a new `outputs/rmbg_generation_*` directory containing a saved-image
+guide, a baseline-derived inpainting mask, rendered photos, and `metrics.jsonl`. Records include
+the failure stage, raw non-finite counts, finite min/max, and render errors. Any invalid mask,
+render failure, or timeout returns exit code 1. A failed baseline stops before Juggernaut loads;
+later segmentation failures remain recorded while the remaining renders use the fixed fixture.
+These diagnostic photos are not covered by kiosk retention; remove them after investigation.
+The standard hardware-free gate tests the probe's logic with mocks, but does not run GPU inference.
 
 The kiosk does not deliver a gray intermediate image as a successful AI portrait. Rendering
 failures offer retry; delivery failures retain the finished image and retry only the handoff.
@@ -139,7 +167,7 @@ uv run vpro --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_
 Extract one still image from the live camera feed and run RMBG end-to-end (preprocess -> OpenVINO inference -> mask postprocess):
 
 ```powershell
-uv run vpro --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_model --device intel:gpu --capture-single-image --camera-index 0 --capture-width 2560 --capture-height 1440 --capture-output outputs/visitor_capture.jpg --capture-rmbg-mask-output outputs/visitor_capture_mask.png --capture-rmbg-foreground-output outputs/visitor_capture_no_bg.png --warmup-frames 12 --capture-delay-seconds 3
+uv run vpro --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_model --device intel:gpu --capture-single-image --camera-index 0 --capture-width 1920 --capture-height 1080 --capture-output outputs/visitor_capture.jpg --capture-rmbg-mask-output outputs/visitor_capture_mask.png --capture-rmbg-foreground-output outputs/visitor_capture_no_bg.png --warmup-frames 12 --capture-delay-seconds 3
 ```
 
 This command saves:
@@ -159,7 +187,7 @@ Mask quality presets:
 - high: strongest cleanup for harder backgrounds
 
 Capture mode now runs as a kiosk flow:
-- live preview with YOLO26 annotations at requested camera resolution (default 2560x1440)
+- live preview with YOLO26 annotations at requested camera resolution (default 1920x1080)
 - on-screen Start Capture button (click to begin countdown)
 - lower-left countdown timer while the subject holds pose
 - capture gate: countdown does not start until a wrist keypoint is detected and held steadily

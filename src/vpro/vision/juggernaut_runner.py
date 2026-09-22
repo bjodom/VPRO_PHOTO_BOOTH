@@ -73,6 +73,7 @@ class JuggernautRunner:
         warmup_width: int = 1080,
         warmup_height: int = 1350,
         attempts: int = DEFAULT_RENDER_ATTEMPTS,
+        vae_precision_hint: str | None = None,
     ) -> None:
         if task not in TASKS:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
@@ -85,6 +86,7 @@ class JuggernautRunner:
         self._warmup = warmup
         self._warmup_size = (int(warmup_width), int(warmup_height))
         self._attempts = attempts
+        self._vae_precision_hint = vae_precision_hint
 
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=max(1, int(queue_size)))
         self._thread: threading.Thread | None = None
@@ -222,6 +224,7 @@ class JuggernautRunner:
                 local_files_only=self._local_files_only,
                 openvino_cache_dir=self._openvino_cache_dir,
                 task=self.task,
+                vae_precision_hint=self._vae_precision_hint,
             )
             if self._warmup:
                 self._run_warmup()

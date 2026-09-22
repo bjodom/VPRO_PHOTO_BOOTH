@@ -26,7 +26,7 @@ param(
     [string]$Backend = "openvino",
     [string]$ModelPath = "models/yolo26/yolo26x-pose_openvino_model",
     [string]$Device = "intel:npu",
-    [string]$RmbgDevice = "GPU",
+    [string]$RmbgDevice = "CPU",
     [string]$JuggernautDevice = "GPU",
     [string]$JuggernautModelId = "OpenVINO/Juggernaut-XL-v9-fp16-ov",
     [ValidateSet("fast", "balanced", "high")]
@@ -34,8 +34,8 @@ param(
     [ValidateSet("identity-lock", "balanced", "stylized")]
     [string]$JuggernautPreset = "balanced",
     [int]$CameraIndex = 0,
-    [int]$CaptureWidth = 2560,
-    [int]$CaptureHeight = 1440,
+    [int]$CaptureWidth = 1920,
+    [int]$CaptureHeight = 1080,
     [ValidateSet(0, 90, 180, 270)]
     [int]$CaptureRotate = 0,
     [int]$WarmupFrames = 12,

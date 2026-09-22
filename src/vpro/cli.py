@@ -102,13 +102,13 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--capture-width",
         type=int,
-        default=2560,
+        default=1920,
         help="Requested camera capture width for kiosk preview and still capture.",
     )
     parser.add_argument(
         "--capture-height",
         type=int,
-        default=1440,
+        default=1080,
         help="Requested camera capture height for kiosk preview and still capture.",
     )
     parser.add_argument(
@@ -216,14 +216,14 @@ def build_parser() -> ArgumentParser:
         action="store_true",
         help=(
             "Run YOLO pose on the Intel NPU while leaving RMBG on its configured device "
-            "(AUTO selects the GPU on this system). Juggernaut stays on the GPU; explicit "
+            "(CPU by default). Juggernaut stays on the GPU; explicit "
             "--device / --rmbg-device values still win."
         ),
     )
     parser.add_argument(
         "--rmbg-device",
-        default="AUTO",
-        help="Device name used for RMBG validation warmup.",
+        default="CPU",
+        help="RMBG device (default: CPU to avoid sharing the generation GPU).",
     )
     parser.add_argument(
         "--mask-quality",
@@ -290,6 +290,14 @@ def build_parser() -> ArgumentParser:
         "--juggernaut-local-only",
         action="store_true",
         help="Use cache/local files only (no network download).",
+    )
+    parser.add_argument(
+        "--juggernaut-vae-precision",
+        default="",
+        help="OpenVINO INFERENCE_PRECISION_HINT applied only to the VAE encoder/decoder, working "
+        "around the fp16 VAE overflow that produces all-black frames. Empty (default) leaves the "
+        "pipeline default precision; on this hardware 'f32' caused heavy paging and renders past "
+        "the 170s event timeout, so only set this after re-measuring the tradeoff.",
     )
     parser.add_argument(
         "--juggernaut-openvino-cache-dir",
@@ -1162,6 +1170,7 @@ def _run_kiosk(args) -> None:
         prop_image=args.compose_prop_image,
         juggernaut_model_id=args.juggernaut_model_id,
         juggernaut_device=args.juggernaut_device,
+        juggernaut_vae_precision_hint=args.juggernaut_vae_precision or None,
         juggernaut_cache_dir=args.juggernaut_openvino_cache_dir,
         local_files_only=args.juggernaut_local_only,
         steps=args.juggernaut_steps if args.juggernaut_steps is not None else 30,

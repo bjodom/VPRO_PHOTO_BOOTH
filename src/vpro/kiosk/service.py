@@ -42,7 +42,7 @@ class KioskConfig:
     yolo_model_path: Path = Path("models/yolo26/yolo26x-pose_openvino_model")
     yolo_device: str = "intel:gpu"
     rmbg_model_dir: Path = Path("models/rmbg/rmbg-1.4")
-    rmbg_device: str = "AUTO"
+    rmbg_device: str = "CPU"
     mask_quality: str = "high"
 
     scene_image: Path = Path("assets/scenes/portrait_scene_1080x1350.jpg")
@@ -50,6 +50,11 @@ class KioskConfig:
 
     juggernaut_model_id: str = "OpenVINO/Juggernaut-XL-v9-fp16-ov"
     juggernaut_device: str = "GPU"
+    #: Forces just the VAE encoder/decoder to this precision, working around the fp16 VAE
+    #: overflow that otherwise produces all-black frames on some GPUs. Off by default: on this
+    #: hardware it caused heavy system paging and pushed renders past the 170s event timeout
+    #: (previously well under 60s at fp16). Only enable if explicitly needed and re-measured.
+    juggernaut_vae_precision_hint: str | None = None
     local_files_only: bool = True
     juggernaut_cache_dir: Path = Path("outputs/openvino_cache/juggernaut")
     steps: int = 30
@@ -179,6 +184,7 @@ class KioskService:
                 warmup=True,
                 warmup_width=self.config.width,
                 warmup_height=self.config.height,
+                vae_precision_hint=self.config.juggernaut_vae_precision_hint,
             ).start()
             self._warmed = True
 

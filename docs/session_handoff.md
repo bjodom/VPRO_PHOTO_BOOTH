@@ -1,6 +1,103 @@
-# Session Handoff: GPU Driver Update
+# Session Handoff: September 21 Post-Reboot Testing
 
-Saved 2026-09-10, before the user's GPU driver update and reboot.
+Updated 2026-09-21, later same day as the reboot section below. This section takes precedence over ALL earlier September 21 and September 10 notes, which are historical.
+
+## Current Pause: Save State, Resume Later
+
+- User asked to save state and pause; wait for their next request. Do not automatically start/stop the camera, kiosk, model probes, install packages, upgrade drivers/runtime, or restore anything.
+- The kiosk process from this session is still running (`http://127.0.0.1:8000`, camera index 1, delivery on 8765) and was NOT stopped as part of this save. Confirm with the user whether to leave it running or stop it (Ctrl+C in its terminal) before starting new work.
+- Uncommitted working tree changes (verify with `git status`): `README.md`, `docs/experience_plan.md`, `docs/session_handoff.md`, `run.ps1`, `src/vpro/cli.py`, `src/vpro/kiosk/service.py`, `src/vpro/vision/juggernaut_runner.py`, `src/vpro/vision/juggernaut_runtime.py`, `src/vpro/vision/rmbg_runtime.py`, `tests/cli_pipeline_test.ps1`, `tests/performance_recommendations_test.py`, plus new untracked `tests/pose_device_test.py` and `tests/rmbg_generation_test.py`. Nothing has been staged, committed, or pushed. User explicitly deferred committing until real-hardware testing was satisfactory; that testing surfaced a new open question, so committing is still pending a decision.
+
+## What Changed and What Was Learned Today
+
+1. Reduced default capture resolution from 2560x1440 to 1920x1080 (camera's native resolution) in `run.ps1` and `src/vpro/cli.py`, to cut per-frame memory/paging. Docs updated to match.
+2. Added a targeted VAE-only FP32 precision override (`vae_precision_hint`) threaded through `load_juggernaut_pipeline`, `JuggernautRunner`, `KioskConfig.juggernaut_vae_precision_hint`, and CLI `--juggernaut-vae-precision`, intended to work around the known SDXL fp16 VAE overflow (all-black frames) without the cost of a full-pipeline FP32 override.
+3. That override was defaulted ON (`"f32"`) and tested on real hardware: it caused heavy system paging and pushed rendering past the service's hard 170s timeout (`RuntimeError: Rendering exceeded the event time limit`), versus sub-60s at fp16 before. This was a regression introduced by this session's own change, now reverted: `KioskConfig.juggernaut_vae_precision_hint` and `--juggernaut-vae-precision` both default to off (`None` / empty string) again. The override plumbing remains available for future opt-in use but is unproven and should not be re-defaulted on without fresh measurement.
+4. After reverting, ran two consecutive real kiosk sessions (same process, same config: YOLO NPU, RMBG CPU, Juggernaut GPU fp16, camera index 1, 1920x1080, rotate 90):
+   - Session 1: succeeded. `renders_served=1`, Juggernaut render 28.26s, total pipeline 29.07s, delivery QR generated, no error.
+   - Session 2 (immediately after): failed. Render took 78.1s (3 internal retry attempts) then raised the same known error: `RuntimeError: Juggernaut inpaint produced a black frame on all 3 attempts. This is the known SDXL fp16 VAE overflow...`
+5. This back-to-back success-then-failure in the identical process/config disproves two hypotheses raised during testing: that moving YOLO off the GPU (NPU contention theory) or that the VAE precision change had fixed generation reliability. Neither did. The user also visually confirmed NPU utilization during pose/framing for the first time this session (previously it was requested in config but never observed active); this may still be a real, separate improvement, but it did not prevent the second failure.
+6. Added `tests/pose_device_test.py`: confirms `CameraStream._annotate` forwards its configured `pose_device` to `predict()`, and that `KioskService.start()` constructs `CameraStream` with `pose_device` equal to `config.yolo_device`, for both `intel:npu` and `intel:gpu`. This is hardware-free and only proves the code-level wiring was already correct; it does not explain the NPU-not-observed-until-now behavior, which is a runtime/driver matter outside this code. Registered in `tests/cli_pipeline_test.ps1`.
+7. Extended `tests/performance_recommendations_test.py` with an explicit VAE-precision-override contract case (default leaves `unet`/`vae_encoder`/`vae_decoder` untouched; explicit `vae_precision_hint="f32"` only touches the two VAE components). Full hardware-free suite passes (102 checks as of the last run this session).
+
+## Net Conclusion: Generation Reliability Is Still NOT Fixed
+
+- The intermittent SDXL fp16 VAE black-frame overflow remains unresolved and unpredictable on this hardware/driver combination. Today's changes only (a) reduced capture memory footprint, and (b) removed a new 170s-timeout regression that this session's own FP32 VAE experiment introduced. Neither change fixes the underlying overflow.
+- Do not claim event readiness. Do not re-enable the FP32 VAE default without a fresh, deliberate benchmark that measures both render time and paging/memory behavior before trusting it again.
+- Untried next steps worth considering when resuming: an isolated VAE-only benchmark (encoder-only vs decoder-only vs both at f32, timed and memory-profiled, independent of a full kiosk session); the previously-noted but unauthorized OpenVINO 2026.4 upgrade; or accepting the existing 3-attempt retry-with-reseed as the practical mitigation and tuning the event timeout/expectations around it.
+
+## Historical: September 21 Reboot Pause (superseded by the above)
+
+
+
+- User reported another failed generation and requested saving state before reboot. Pause investigation; do not automatically start the camera, kiosk, model probes, install packages, or upgrade drivers/runtime after reboot. Wait for the user's request.
+- Latest persisted record in `outputs/kiosk/pipeline_metrics.jsonl`: `2026-09-21T14:49:08.413738`, `success=false`, YOLO `intel:npu`, RMBG `CPU`, render `GPU`, inpaint, 30 steps, strength 0.99. RMBG took 0.727s, YOLO 0.061s, composition 0.095s, total compose 0.947s; Juggernaut took 102.039s (render 102.037s). CPU segmentation/composition completed before generation failed. The exact latest exception has NOT been captured; do not label this latest failure RMBG NaNs, black output, timeout, or OOM without its traceback.
+- Earlier September 21 failures used GPU RMBG. Their terminal traceback was `service._produce -> compose_portrait_from_image -> rmbg_runtime.segment -> postprocess_mask`, raising `RuntimeError: RMBG inference returned non-finite values; subject segmentation failed.` That failure occurred before rendering. GPU coexistence is implicated by prior probes, but its underlying cause is not established.
+- CPU RMBG is now the production default, chosen by the user for reliability over a small latency saving. It does NOT establish that Juggernaut generation is reliable; the latest record confirms failure still occurs with CPU RMBG.
+- Preserve all current outputs, model files, compiled caches, and uncommitted changes across reboot. September 10 claims that no photos/metrics exist are stale: new September 21 captures and metrics exist. No cleanup, commit, push, stash, or upgrade was performed in this session. Current service/process shutdown status has not been verified during this save.
+
+## Current Changes and Verification
+
+- CPU RMBG defaults updated in `run.ps1`, `src/vpro/cli.py`, `src/vpro/kiosk/service.py`, and both constructors/loaders in `src/vpro/vision/rmbg_runtime.py`. Explicit GPU overrides remain supported. YOLO remains NPU and Juggernaut remains GPU in the normal launcher.
+- Added `tests/rmbg_generation_test.py`: opt-in saved-photo real RMBG/Juggernaut coexistence regression. Checks segmentation before load, after load, after explicit warmup, and after EVERY repeated render including the final render. Uses fixed input/mask/seed, single render attempt, offline loading before runtime imports, stage JSONL records, fresh output directory, and bounded shutdown. Default RMBG device intentionally remains GPU to reproduce the issue; CPU override provides a control. It does not use the camera, YOLO, or delivery.
+- Added hardware-free coverage in `tests/performance_recommendations_test.py` for stage order, corruption/failure/timeout handling, command dispatch, and CPU defaults, using real parser/contracts and autospecced runtime/runner mocks. Added launcher CPU-default/GPU-override checks in `tests/cli_pipeline_test.ps1`. Updated `README.md` with defaults and hardware regression instructions.
+- Full hardware-free launcher gate passed 310 checks: performance 99, app 65, session 50, framing 28, runner 32, delivery 36, plus launcher contracts. Focused performance checks passed again after fixing mock-fixture diagnostics. These are earlier session results, not rerun during this save. Some unrelated existing editor diagnostics remain in the performance test.
+- The NEW real coexistence regression has NOT been run against hardware. Hardware-free checks do not prove GPU numerical stability. Latest real CPU-default kiosk attempt failed as recorded above; repeated full kiosk acceptance and phone delivery are not established.
+- Existing `tests/gpu_contention_test.py` measures YOLO/Juggernaut contention, not RMBG. Launcher test `-Hardware` skips guided generation. Neither replaces the new regression or full kiosk acceptance.
+- `docs/session_handoff.md` already had user changes before this session; historical content is preserved below. Do not revert unrelated work. No forced VAE FP32 override should be reintroduced: the user rejected its cost earlier.
+
+## Measured Environment and Upgrade Discussion
+
+- Interpreter: project `.venv\Scripts\python.exe`, Python 3.14. OpenVINO `2026.3.1-22476-759c5a6ab8c-releases/2026/3`; optimum 2.3.0; optimum-intel 2.1.0; diffusers 0.37.1.
+- Hardware: Intel Core Ultra X7 358H, Intel Arc B390 iGPU. September 21 driver query: GPU `32.0.101.8724` (April 15, 2026); NPU `32.0.100.5540` (August 19, 2026). This GPU reading differs from historical September 10 notes; no explanation or driver change was attempted.
+- Isolated RMBG benchmark used saved capture `outputs/kiosk/capture_1acaf57d1da448958902ec55b224bd2f.jpg`, separate CPU/GPU processes, one first call plus five warmed full `segment` calls, no Juggernaut. Warm median CPU 0.473s vs GPU 0.098s, about 0.38s extra per photo; both produced valid masks. This is NOT a coexistence test.
+- Recurring Optimum warning comes from diffusers detecting both `optimum` and `optimum-intel` as owners of the shared namespace. Installed versions satisfy the optimum-intel requirement (`optimum~=2.3.0`); no demonstrated version conflict. Do not uninstall either based on this warning.
+- OpenVINO 2026.4 released September 16 and has a Windows Python 3.14 wheel. Official notes explicitly support optimum-intel 2.1.0, but no fix specifically for our RMBG NaNs or Juggernaut black images was identified. Listed Windows NPU driver issue recommends 32.0.100.5540 or newer, which this machine meets. Full dependency resolution was not tested.
+- Recommendation was controlled testing in a separate environment with a separate compiled cache, not an urgent in-place upgrade or presumed fix. User has NOT authorized or performed the upgrade. Keep CPU RMBG as default. Release notes: https://docs.openvino.ai/2026/about-openvino/release-notes-openvino.html
+
+## Resume After Reboot
+
+1. Read this section first. Ask for the user's reboot/test result or follow their new request; do not launch anything automatically. Confirm runtime/driver versions and reboot state when a comparison is authorized.
+2. Obtain the latest traceback if still available. Metrics record failure and timings, but not its exact cause. If a new test is authorized, retain terminal output and match its timestamp to metrics. Distinguish CPU segmentation success followed by generation failure from prior GPU segmentation NaNs.
+3. User's last normal launcher command, with C920-selected index and clockwise rotation, was:
+
+	```powershell
+	.\run.ps1 -CameraIndex 1 -CaptureWidth 1920 -CaptureHeight 1080 -CaptureRotate 90
+	```
+
+	CPU RMBG now applies without another flag. Camera index 1 was suggested for C920 but OpenCV mapping was not independently verified; Windows also lists ASUS FHD and IR cameras. Browser is normally `http://127.0.0.1:8000`, guest delivery port 8765. Wait for readiness, then complete the guest flow. Ctrl+C stops the service. Do not use `-Sync` casually; it changes the environment.
+4. If authorized, run the saved-photo regression documented in README with a currently existing capture and a NEW output directory. Compare CPU and GPU in separate processes with kiosk stopped. Do not assume historical September 10 image paths still exist. Then validate repeated real kiosk sessions and output quality, not just mocked checks.
+5. An older detailed inpainting tensor probe remains in local stash `f08e8302accb77d94ce0386c2a6748037adb7934`; do not automatically restore it or overwrite work. Its history and limitations are recorded below. Generation reliability and event readiness remain unresolved.
+
+## Historical September 10 Handoff
+
+Updated 2026-09-10 before closing VS Code. Earlier diagnostic history is retained below.
+
+## Next Session: User-Run Launcher Test
+
+This section takes precedence over all historical notes below.
+
+- User is closing VS Code and plans a clean reboot, then a normal end-user test from PowerShell. Do not start the camera, kiosk, or model probes automatically. Wait for their results or explicit request.
+- Stable code checkpoint: `23248da` on `master`, committed and pushed to `origin/master` (`bjodom/VPRO_PHOTO_BOOTH`). The checkpoint passed 262 hardware-free checks plus launcher contracts, JavaScript syntax, and whitespace validation.
+- The previous live session succeeded in 35.58 seconds total after removing the forced VAE FP32 override. It used an in-memory wrapper and explicitly set offline environment variables; it was NOT a direct `run.ps1` acceptance test. The upcoming test must use the launcher unchanged, without those wrappers.
+- All generated photos, masks, compositions, metrics, and diagnostic logs in `outputs` were deleted at the user's request after the checkpoint. Only `outputs/openvino_cache` remains (approximately 11.7 GiB). Every saved-input/output reference below is now historical, not an available file. A new authorized capture is needed for future compositing experiments.
+- The diagnostic probe remains in the local-only stash documented below; it was not deleted by output cleanup or pushed to GitHub.
+- The app was stopped and its ports closed after the live session. This handoff update is a local documentation change after the pushed code checkpoint; no additional commit or push is part of this save.
+
+After reboot, the user will run:
+
+```powershell
+cd C:\Users\bjodom\ai_projects\vPRO_Photo_Booth
+.\run.ps1
+```
+
+No environment activation, dependency sync, downloads, or extra model flags are needed for the intended launcher test. If PowerShell blocks script execution, use `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned` in that terminal and retry.
+
+The browser should open at `http://127.0.0.1:8000`. Wait for Start to enable, then complete consent, destination selection, capture, review, and generation. Inspect the image and test QR delivery while the service is running. Stop with Ctrl+C in PowerShell; closing the browser does not stop the application. Normal launching is persistent, not automatic one-session shutdown.
+
+If startup stalls, preserve the terminal error/output and diagnose the actual launcher path before changing settings. The probe's offline import-order fix is in the stash; do not assume it modified production startup. Do not reintroduce FP32 as a workaround.
+
+After launcher validation, the next feature discussion is integrated person/scene generation. Current behavior preserves the photographed body and prop while generating the background. No face-protected portrait prototype or identity-conditioning change has been implemented, and phone delivery/full event acceptance remain unverified.
 
 ## Current Status After Reboot and Cleanup
 
@@ -19,7 +116,7 @@ This section supersedes the historical pre-reboot instructions below.
 - Tensor tracing scans inputs/outputs and flushes JSON per component call, so it adds unmeasured diagnostic overhead. It was never wired into the kiosk. Production timing records and non-finite/black-frame safety checks remain enabled.
 - This is a managed IT machine with monitoring; the intended deployment is clean Windows 11. Driver, reboot, and reduced background load changed together. Full repeated camera/generation/delivery acceptance and visual-quality review are still required on the deployment machine.
 
-## Resume Instructions
+## Historical Pre-Reboot Resume Instructions
 
 - Testing is PAUSED at the user's request while they update GPU drivers.
 - Wait for confirmation that the update and reboot are complete before loading models or restarting the kiosk.

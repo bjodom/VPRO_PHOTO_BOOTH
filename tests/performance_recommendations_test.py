@@ -51,6 +51,26 @@ def test_vae_precision_contract() -> None:
         components[name].compile.assert_called_once_with()
     check("shared config remains unchanged", shared_config == {"CACHE_DIR": "test-cache"})
 
+    override_components = {
+        name: SimpleNamespace(ov_config={"CACHE_DIR": "test-cache"}, compile=Mock())
+        for name in ("unet", "vae_encoder", "vae_decoder")
+    }
+    override_factory = Mock()
+    pipeline_stub = SimpleNamespace(components=override_components, **override_components)
+    override_factory.from_pretrained.return_value = pipeline_stub
+    override_module = SimpleNamespace(
+        OVPipelineForImage2Image=override_factory,
+        OVPipelineForInpainting=override_factory,
+        OVPipelineForText2Image=override_factory,
+    )
+    with patch.dict(sys.modules, {"optimum.intel": override_module}):
+        load_juggernaut_pipeline("test-model", device="GPU", task="inpaint", vae_precision_hint="f32")
+    check("unet unaffected by VAE precision override",
+          "INFERENCE_PRECISION_HINT" not in override_components["unet"].ov_config)
+    for name in ("vae_encoder", "vae_decoder"):
+        check(f"{name} receives precision override",
+              override_components[name].ov_config["INFERENCE_PRECISION_HINT"] == "f32")
+
 
 def test_rmbg_nonfinite_output() -> None:
     from unittest.mock import Mock, patch
@@ -70,6 +90,129 @@ def test_rmbg_nonfinite_output() -> None:
     valid = np.linspace(0, 1, 64).reshape(1, 1, 8, 8)
     mask = runtime.postprocess_mask(valid, (8, 8))
     check("valid RMBG output still normalizes", mask.min() == 0 and mask.max() == 255)
+
+    from vpro.vision.rmbg_runtime import load_rmbg_runtime
+    with patch("openvino.Core", return_value=core), \
+         patch("vpro.vision.rmbg_runtime.validate_rmbg_assets", return_value=Path("test-model")):
+        runtime = RMBGRuntime(Path("test-model"))
+        check("RMBG runtime defaults to CPU", runtime.device == "CPU")
+        core.compile_model.assert_called_with(model=str(Path("test-model/model.xml")), device_name="CPU")
+        check("RMBG loader defaults to CPU", load_rmbg_runtime(Path("test-model")).device == "CPU")
+        check("RMBG loader preserves GPU override", load_rmbg_runtime(Path("test-model"), device="GPU").device == "GPU")
+
+
+def test_rmbg_generation_probe() -> None:
+    import os
+    import runpy
+    from concurrent.futures import Future
+    from unittest.mock import create_autospec, patch
+    from vpro.vision.juggernaut_runner import JuggernautRunner
+    from vpro.vision.juggernaut_types import RenderRequest, RenderResult
+    from vpro.vision.rmbg_runtime import RMBGRuntime
+
+    probe = runpy.run_path(str(REPO_ROOT / "tests/rmbg_generation_test.py"))
+    phases = ["before_load", "after_load", "after_warmup", "after_render_1", "after_render_2"]
+    valid = np.linspace(0, 1, 64).reshape(1, 1, 8, 8)
+    image = np.full((8, 8, 3), 128, dtype=np.uint8)
+    cases = (
+        ("healthy", None, None),
+        ("warmup corruption", 2, np.nan),
+        ("final render corruption", 4, np.nan),
+        ("load corruption", 1, np.inf),
+        ("baseline corruption", 0, np.nan),
+        ("render failure", None, None),
+        ("warmup failure", None, None),
+        ("load timeout", None, None),
+        ("render timeout", None, None),
+    )
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        request = RenderRequest(
+            mode="inpaint", prompt="test", output_path=root / "render.jpg",
+            input_image_path=root / "guide.png", mask_image_path=root / "mask.png",
+            width=64, height=64, strength=0.99,
+        ).validated()
+        for label, corrupt_index, invalid in cases:
+            runtime = create_autospec(RMBGRuntime, instance=True)
+            runtime._output = "mask"
+            runtime.preprocess_image.return_value = (image, (8, 8))
+            outputs = [valid.copy() for _ in phases]
+            if corrupt_index is not None:
+                outputs[corrupt_index].fill(invalid)
+            runtime.infer.side_effect = [{"mask": output} for output in outputs]
+            runtime.postprocess_mask.side_effect = lambda raw, size: RMBGRuntime.postprocess_mask(
+                runtime, raw, size
+            )
+            runner = create_autospec(JuggernautRunner, instance=True)
+            runner.wait_until_ready.return_value = label != "load timeout"
+            good = RenderResult(True, root / "render.jpg", 0.1, 0.0)
+            bad = RenderResult(False, None, 0.1, 0.0, "render failed")
+            warmup = Future()
+            warmup.set_result(bad if label == "warmup failure" else good)
+            runner.submit_warmup.return_value = warmup
+            runner.render.return_value = bad if label == "render failure" else good
+            if label == "render timeout":
+                runner.render.side_effect = TimeoutError("test timeout")
+            entries = []
+            passed = probe["run_sequence"](
+                runtime, runner, image, request, 2, 1.0,
+                lambda **entry: entries.append(entry),
+            )
+            check(f"probe {label} outcome", passed == (label == "healthy"))
+            if corrupt_index is not None:
+                failure = next(entry for entry in entries if entry["phase"] == phases[corrupt_index])
+                check(f"probe {label} raw count", failure["nonfinite"] == 64 and not failure["ok"])
+            if label == "baseline corruption":
+                runner.start.assert_not_called()
+                continue
+            runner.shutdown.assert_called_once_with(timeout=10)
+            if label == "load timeout":
+                runner.render.assert_not_called()
+            elif label == "render timeout":
+                check("probe render timeout recorded", entries[-1]["phase"] == "render_1"
+                      and entries[-1]["kind"] == "execution")
+            else:
+                check(f"probe {label} checks every boundary",
+                      [entry["phase"] for entry in entries if entry["kind"] == "segmentation"] == phases)
+                check(f"probe {label} repeated renders", runner.render.call_count == 2)
+                check(f"probe {label} fixed seed", all(
+                    call.args[0].seed == request.seed for call in runner.render.call_args_list
+                ))
+
+        photo = root / "photo.png"
+        assert cv2.imwrite(str(photo), image)
+        for expected in (0, 1):
+            runtime = create_autospec(RMBGRuntime, instance=True)
+            runtime._output = "mask"
+            runtime.preprocess_image.return_value = (image, (8, 8))
+            runtime.postprocess_mask.side_effect = lambda raw, size: RMBGRuntime.postprocess_mask(
+                runtime, raw, size
+            )
+            runtime.infer.return_value = {"mask": valid if expected == 0 else np.full_like(valid, np.nan)}
+            runner = create_autospec(JuggernautRunner, instance=True)
+            good = RenderResult(True, root / "render.jpg", 0.1, 0.0)
+            warmup = Future()
+            warmup.set_result(good)
+            runner.submit_warmup.return_value = warmup
+            runner.wait_until_ready.return_value = True
+            runner.render.return_value = good
+            output_dir = root / f"main_{expected}"
+            with patch.dict(os.environ), \
+                 patch("vpro.vision.rmbg_runtime.load_rmbg_runtime", autospec=True, return_value=runtime) as load, \
+                 patch("vpro.vision.juggernaut_runner.JuggernautRunner", autospec=True, return_value=runner) as factory:
+                code = probe["main"]([
+                    "--image", str(photo), "--output-dir", str(output_dir),
+                    "--runs", "2", "--rmbg-device", "CPU",
+                ])
+                check(f"probe main exit {expected}", code == expected)
+                check("probe main offline before loading", os.environ["HF_HUB_OFFLINE"] == "1")
+                check("probe CPU control forwarded", load.call_args.kwargs["device"] == "CPU")
+                check("probe explicit warmup and single attempt",
+                      factory.call_args.kwargs["warmup"] is False
+                      and factory.call_args.kwargs["attempts"] == 1)
+            import json
+            records = [json.loads(line) for line in (output_dir / "metrics.jsonl").read_text().splitlines()]
+            check("probe summary persisted", records[-1] == {"kind": "summary", "ok": expected == 0})
 
 
 def test_cli_capture_contract() -> None:
@@ -91,6 +234,12 @@ def test_cli_capture_contract() -> None:
     with patch("vpro.kiosk.service.KioskService") as service, patch("vpro.kiosk.app.run"):
         cli._run_kiosk(args)
     check("kiosk receives pose rate", service.call_args.args[0].pose_fps == 9)
+    check("CLI dispatch defaults RMBG to CPU", service.call_args.args[0].rmbg_device == "CPU")
+    check("kiosk config defaults RMBG to CPU", KioskConfig().rmbg_device == "CPU")
+    args = cli.build_parser().parse_args(["--kiosk", "--rmbg-device", "GPU"])
+    with patch("vpro.kiosk.service.KioskService") as service, patch("vpro.kiosk.app.run"):
+        cli._run_kiosk(args)
+    check("CLI dispatch preserves RMBG GPU override", service.call_args.args[0].rmbg_device == "GPU")
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -433,6 +582,7 @@ def main() -> int:
         test_asset_caches,
         test_vae_precision_contract,
         test_rmbg_nonfinite_output,
+        test_rmbg_generation_probe,
         test_pose_rate_validation,
         test_camera_acquires_during_slow_pose,
         test_output_retention,
