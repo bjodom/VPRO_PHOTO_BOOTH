@@ -48,7 +48,8 @@ class KioskConfig:
     scene_image: Path = Path("assets/scenes/portrait_scene_1080x1350.jpg")
     prop_image: Path = Path("assets/props/vpro_laptop.png")
 
-    juggernaut_model_id: str = "OpenVINO/Juggernaut-XL-v9-fp16-ov"
+    # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
+    juggernaut_model_id: str = "OpenVINO/Juggernaut-XL-v9-int8-ov"
     juggernaut_device: str = "GPU"
     #: Forces just the VAE encoder/decoder to this precision, working around the fp16 VAE
     #: overflow that otherwise produces all-black frames on some GPUs. Off by default: on this

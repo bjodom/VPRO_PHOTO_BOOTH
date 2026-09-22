@@ -28,7 +28,8 @@ param(
     [string]$Device = "intel:npu",
     [string]$RmbgDevice = "CPU",
     [string]$JuggernautDevice = "GPU",
-    [string]$JuggernautModelId = "OpenVINO/Juggernaut-XL-v9-fp16-ov",
+    # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
+    [string]$JuggernautModelId = "OpenVINO/Juggernaut-XL-v9-int8-ov",
     [ValidateSet("fast", "balanced", "high")]
     [string]$MaskQuality = "high",
     [ValidateSet("identity-lock", "balanced", "stylized")]

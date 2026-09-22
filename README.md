@@ -1,40 +1,33 @@
 # vPRO
 
-Local photo-booth kiosk with consent, destination selection, camera preview, portrait generation,
-and QR delivery. OpenVINO models remain resident between guests. Two inference backends are available:
-
-- OpenVINO (`openvino`) as the primary backend
-- PyTorch (`torch`) as optional secondary backend
-
-Target OpenVINO version line: `2026.4.x`
-
-The architecture is OpenVINO-first for Intel hardware and keeps PyTorch optional when needed.
-
-YOLO26 runtime behavior mirrors the local demo at `C:\Users\bjodom\ai_projects\ultralytics-demo`:
-- Accept either `.pt` checkpoints or pre-exported `_openvino_model` directories.
-- Auto-export to OpenVINO once when needed.
-- Reuse existing OpenVINO artifacts on subsequent runs.
-
-## Quick Start
+## Run It This Way
 
 ```powershell
-# One-time setup with network access. Add -UseIntelProxy on the Intel network.
-.\run.ps1 -Sync -DownloadJuggernaut
+# One-time setup: sync the .venv dependencies and download the Juggernaut model.
+# Add -UseIntelProxy on the Intel network when required.
+.\run.ps1 -Sync -DownloadJuggernaut -CameraIndex 1 -CaptureRotate 90
 
-# Daily event launch. Opens the browser after the local server starts.
-.\run.ps1
+# Daily event launch using external camera ID 1, rotated for portrait orientation.
+.\run.ps1 -CameraIndex 1 -CaptureRotate 90
 ```
 
-The launcher uses `.venv` directly, defaults to offline model loading, and installs both `gen`
-and `kiosk` extras when `-Sync` is requested. Local YOLO and RMBG XML/BIN artifacts and the laptop
-prop must already be present. The browser is at http://127.0.0.1:8000 by default.
+`-CameraIndex` selects the Windows camera. The built-in camera is often `0`; an external camera is
+often `1` or `2`. If camera `1` does not show the external camera, retry with `-CameraIndex 2`.
 
-Your selected device defaults are YOLO26 `intel:npu`, RMBG `CPU`, and Juggernaut `GPU`.
+`-CaptureRotate` rotates the camera image by `0`, `90`, `180`, or `270` degrees. Use `90` or `270`
+when the external camera is mounted sideways; use `0` when it is already upright.
+
+The launcher uses `.venv` directly and opens the kiosk at http://127.0.0.1:8000. The setup command
+installs the `gen` and `kiosk` extras and downloads the Juggernaut model; omit `-Sync` and
+`-DownloadJuggernaut` on later launches. Local YOLO and RMBG XML/BIN artifacts and the laptop prop
+must already be present.
+
+The project uses OpenVINO `2026.4.x` by default. YOLO26 defaults to `intel:npu`, RMBG to `CPU`,
+and Juggernaut to `GPU`.
+
 RMBG stays off the generation GPU to avoid shared-GPU contention. Use `-RmbgDevice GPU`
 only as an explicit override. This is a deployment profile, not a claim that it is optimal
 on every Intel system.
-The renderer loads and warms before the first guest can start. The normal kiosk uses inpainting;
-historical 5-6 second img2img measurements are not an established kiosk latency guarantee.
 
 Useful launcher options:
 
@@ -274,7 +267,7 @@ Run both test stages (single pipeline load):
 - stage 2: image-guided render using the composed portrait as guide
 
 ```powershell
-uv run vpro --test-juggernaut --juggernaut-model-id OpenVINO/Juggernaut-XL-v9-fp16-ov --juggernaut-guided-input-image outputs/final_portrait_1080x1350_lenovo_test.jpg
+uv run vpro --test-juggernaut --juggernaut-model-id OpenVINO/Juggernaut-XL-v9-int8-ov --juggernaut-guided-input-image outputs/final_portrait_1080x1350_lenovo_test.jpg
 ```
 
 The standalone prompt test stores reusable compiled OpenVINO artifacts in `outputs/openvino_cache/juggernaut` by default. This cache survives normal process exits and avoids rebuilding GPU kernels when the model, target device or driver, OpenVINO version, and compilation-relevant shapes/settings are unchanged. Optimum still reloads the multi-gigabyte SDXL OpenVINO model files in each new Python process, so use a long-lived application process when low latency across separate requests matters. Override the cache location with `--openvino-cache-dir PATH`.

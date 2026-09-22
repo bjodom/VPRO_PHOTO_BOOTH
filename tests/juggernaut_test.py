@@ -93,7 +93,7 @@ def build_prompt(scene_key: str, custom_prompt: str | None) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model-id", default="OpenVINO/Juggernaut-XL-v9-fp16-ov")
+    parser.add_argument("--model-id", default="OpenVINO/Juggernaut-XL-v9-int8-ov")
     parser.add_argument("--device", default="GPU")
     parser.add_argument(
         "--local-only",

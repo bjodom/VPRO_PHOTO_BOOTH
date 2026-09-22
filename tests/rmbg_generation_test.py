@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--render-device", default="GPU")
     parser.add_argument("--rmbg-model-dir", type=Path,
                         default=REPO_ROOT / "models/rmbg/rmbg-1.4")
-    parser.add_argument("--model-id", default="OpenVINO/Juggernaut-XL-v9-fp16-ov")
+    parser.add_argument("--model-id", default="OpenVINO/Juggernaut-XL-v9-int8-ov")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--seed", type=int, default=1234)

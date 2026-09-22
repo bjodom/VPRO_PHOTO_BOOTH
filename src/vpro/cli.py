@@ -278,7 +278,8 @@ def build_parser() -> ArgumentParser:
     )
     parser.add_argument(
         "--juggernaut-model-id",
-        default="OpenVINO/Juggernaut-XL-v9-fp16-ov",
+        # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
+        default="OpenVINO/Juggernaut-XL-v9-int8-ov",
         help="Hugging Face model id or local model directory for OpenVINO Juggernaut pipeline.",
     )
     parser.add_argument(

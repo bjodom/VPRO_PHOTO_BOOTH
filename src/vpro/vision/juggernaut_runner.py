@@ -63,7 +63,8 @@ class JuggernautRunner:
 
     def __init__(
         self,
-        model_id: str = "OpenVINO/Juggernaut-XL-v9-fp16-ov",
+        # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
+        model_id: str = "OpenVINO/Juggernaut-XL-v9-int8-ov",
         device: str = "GPU",
         local_files_only: bool = True,
         openvino_cache_dir: Path | None = None,
