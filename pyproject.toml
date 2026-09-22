@@ -5,7 +5,7 @@ description = "Backend-switchable inference scaffold for PyTorch and OpenVINO"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-	"openvino>=2026.3.1,<2026.4",
+	"openvino>=2026.4,<2026.5",
 	"opencv-python>=4.10",
 	"ultralytics>=8.3.0",
 ]

@@ -6,7 +6,7 @@ and QR delivery. OpenVINO models remain resident between guests. Two inference b
 - OpenVINO (`openvino`) as the primary backend
 - PyTorch (`torch`) as optional secondary backend
 
-Target OpenVINO version line: `2026.3.x`
+Target OpenVINO version line: `2026.4.x`
 
 The architecture is OpenVINO-first for Intel hardware and keeps PyTorch optional when needed.
 
