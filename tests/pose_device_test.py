@@ -56,9 +56,8 @@ def test_service_forwards_yolo_device_to_camera() -> None:
             root = Path(raw)
             (root / "model.xml").write_text("<model/>")
             (root / "model.bin").write_bytes(b"model")
-            (root / "prop.png").write_bytes(b"prop")
             config = KioskConfig(
-                output_dir=root, rmbg_model_dir=root, prop_image=root / "prop.png", yolo_device=device
+                output_dir=root, rmbg_model_dir=root, yolo_device=device
             )
             with patch("openvino.Core") as core, \
                  patch("vpro.backends.factory.build_backend", return_value=Mock()), \

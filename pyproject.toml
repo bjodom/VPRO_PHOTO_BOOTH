@@ -1,7 +1,7 @@
 [project]
 name = "vpro"
 version = "0.1.0"
-description = "Backend-switchable inference scaffold for PyTorch and OpenVINO"
+description = "OpenVINO-first inference backend for the vPRO photo booth"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -11,9 +11,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-torch = [
-	"torch>=2.4",
-]
 gen = [
 	"optimum[openvino]>=1.23.0",
 	"diffusers>=0.30.0",

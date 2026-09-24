@@ -6,13 +6,13 @@
     This is the primary Windows launcher for the project. It keeps paths rooted at the repository,
     optionally enables the parent-directory Intel proxy, and forwards production controls to the
     vpro CLI. Normal execution uses the project's .venv directly; uv is only needed for -Sync or
-    -DownloadJuggernaut.
+    -DownloadModel.
 
 .EXAMPLE
     .\run.ps1
 
 .EXAMPLE
-    .\run.ps1 -UseIntelProxy -Sync -DownloadJuggernaut -CaptureAutoStart
+    .\run.ps1 -UseIntelProxy -Sync -DownloadModel -CaptureAutoStart
 
 .EXAMPLE
     .\run.ps1 -Device intel:gpu -RmbgDevice GPU -JuggernautPreset identity-lock
@@ -22,14 +22,15 @@
 param(
     [ValidateSet("kiosk", "social")]
     [string]$Mode = "kiosk",
-    [ValidateSet("openvino", "torch")]
+    [ValidateSet("openvino")]
     [string]$Backend = "openvino",
     [string]$ModelPath = "models/yolo26/yolo26x-pose_openvino_model",
     [string]$Device = "intel:npu",
     [string]$RmbgDevice = "CPU",
     [string]$JuggernautDevice = "GPU",
-    # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
-    [string]$JuggernautModelId = "OpenVINO/Juggernaut-XL-v9-int8-ov",
+    [ValidateSet("DreamShaper", "Juggernaut")]
+    [string]$GenerationEngine = "DreamShaper",
+    [string]$JuggernautModelId,
     [ValidateSet("fast", "balanced", "high")]
     [string]$MaskQuality = "high",
     [ValidateSet("identity-lock", "balanced", "stylized")]
@@ -43,11 +44,13 @@ param(
     [int]$CaptureDelaySeconds = 3,
     [double]$CaptureWristStableSeconds = 0.7,
     [string]$SceneImage = "assets/scenes/portrait_scene_1080x1350.jpg",
-    [string]$PropImage = "assets/props/lenovo.laptop.png",
     [string]$RmbgModelDir = "models/rmbg/rmbg-1.4",
     [string]$ComposeOutputImage = "outputs/final_portrait_1080x1350.jpg",
     [string]$FinalOutputImage = "outputs/final_portrait_1080x1350_final.jpg",
-    [string]$JuggernautGuidedOutput = "outputs/juggernaut_guided.jpg",
+    [string]$JuggernautGuidedOutput = "outputs/generation_guided.jpg",
+    [int]$GenerationSteps = 0,
+    [double]$GenerationGuidanceScale = 0,
+    [double]$GenerationGuidedStrength = 0,
     [int]$JuggernautSteps = 0,
     [double]$JuggernautGuidanceScale = 0,
     [double]$JuggernautGuidedStrength = 0,
@@ -58,7 +61,8 @@ param(
     [switch]$JuggernautNoPreload,
     [switch]$SkipGuided,
     [switch]$UseIntelProxy,
-    [switch]$DownloadJuggernaut,
+    [Alias("DownloadJuggernaut")]
+    [switch]$DownloadModel,
     [switch]$Sync,
     [switch]$AllowModelDownloads,
     [switch]$DryRun,
@@ -77,6 +81,16 @@ $ErrorActionPreference = "Stop"
 Push-Location -LiteralPath $PSScriptRoot
 try {
 
+if (-not $JuggernautModelId) {
+    $JuggernautModelId = if ($GenerationEngine -eq "Juggernaut") {
+        "models/juggernaut-int8"
+    } else {
+        "OpenVINO/dreamshaper-8-inpainting-int8-ov"
+    }
+}
+$GenerationWidth = if ($GenerationEngine -eq "Juggernaut") { 896 } else { 512 }
+$GenerationHeight = if ($GenerationEngine -eq "Juggernaut") { 1120 } else { 768 }
+
 function Assert-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "Required command '$Name' was not found. Install uv and ensure it is on PATH."
@@ -92,12 +106,20 @@ function Assert-Path([string]$Path, [string]$Description) {
 Assert-Path $ModelPath "YOLO model path"
 Assert-Path $RmbgModelDir "RMBG model directory"
 Assert-Path $SceneImage "scene image"
-Assert-Path $PropImage "prop image"
 if ($Mode -eq "kiosk" -and $Backend -ne "openvino") {
     throw "Kiosk mode requires OpenVINO. Use -Mode social for other backends."
 }
 if ($Mode -eq "kiosk" -and $SkipGuided) {
     throw "Event kiosk requires generation. Use -Mode social -SkipGuided for diagnostic composition."
+}
+if ($PSBoundParameters.ContainsKey("GenerationSteps") -and $PSBoundParameters.ContainsKey("JuggernautSteps") -and $GenerationSteps -ne $JuggernautSteps) {
+    throw "Use -GenerationSteps or -JuggernautSteps, not both with different values. Prefer -GenerationSteps."
+}
+if ($PSBoundParameters.ContainsKey("GenerationGuidanceScale") -and $PSBoundParameters.ContainsKey("JuggernautGuidanceScale") -and $GenerationGuidanceScale -ne $JuggernautGuidanceScale) {
+    throw "Use -GenerationGuidanceScale or -JuggernautGuidanceScale, not both with different values. Prefer -GenerationGuidanceScale."
+}
+if ($PSBoundParameters.ContainsKey("GenerationGuidedStrength") -and $PSBoundParameters.ContainsKey("JuggernautGuidedStrength") -and $GenerationGuidedStrength -ne $JuggernautGuidedStrength) {
+    throw "Use -GenerationGuidedStrength or -JuggernautGuidedStrength, not both with different values. Prefer -GenerationGuidedStrength."
 }
 
 if ($UseIntelProxy) {
@@ -117,12 +139,16 @@ if ($Sync) {
 
 Assert-Path ".venv\Scripts\python.exe" "project Python environment"
 
-if ($DownloadJuggernaut) {
-    Assert-Command "uvx"
-    Write-Host "Ensuring Juggernaut model is available: $JuggernautModelId" -ForegroundColor Cyan
-    & uvx --from huggingface_hub hf download $JuggernautModelId
-    if ($LASTEXITCODE -ne 0) {
-        throw "Juggernaut model download failed with exit code $LASTEXITCODE"
+if ($DownloadModel) {
+    if (Test-Path -LiteralPath $JuggernautModelId) {
+        Write-Host "Using local generation model: $JuggernautModelId" -ForegroundColor Cyan
+    } else {
+        Assert-Command "uvx"
+        Write-Host "Ensuring generation model is available: $JuggernautModelId" -ForegroundColor Cyan
+        & uvx --from huggingface_hub hf download $JuggernautModelId
+        if ($LASTEXITCODE -ne 0) {
+            throw "Generation model download failed with exit code $LASTEXITCODE"
+        }
     }
 }
 
@@ -140,14 +166,15 @@ $Arguments = @(
     "--capture-delay-seconds", $CaptureDelaySeconds,
     "--capture-wrist-stable-seconds", $CaptureWristStableSeconds,
     "--compose-scene-image", $SceneImage,
-    "--compose-prop-image", $PropImage,
     "--compose-output-image", $ComposeOutputImage,
     "--final-output-image", $FinalOutputImage,
-    "--juggernaut-guided-output", $JuggernautGuidedOutput,
+    "--generation-guided-output", $JuggernautGuidedOutput,
     "--mask-quality", $MaskQuality,
-    "--juggernaut-model-id", $JuggernautModelId,
-    "--juggernaut-device", $JuggernautDevice,
-    "--juggernaut-preset", $JuggernautPreset
+    "--generation-model-id", $JuggernautModelId,
+    "--generation-device", $JuggernautDevice,
+    "--generation-preset", $JuggernautPreset,
+    "--generation-width", $GenerationWidth,
+    "--generation-height", $GenerationHeight
 )
 
 if ($Mode -eq "kiosk") {
@@ -163,17 +190,27 @@ if ($Mode -eq "kiosk") {
 
 if ($Npu) { $Arguments += "--npu" }
 if ($CaptureAutoStart) { $Arguments += "--capture-auto-start" }
-if ($JuggernautLocalOnly -or -not $AllowModelDownloads) { $Arguments += "--juggernaut-local-only" }
-if ($JuggernautNoPreload) { $Arguments += "--juggernaut-no-preload" }
-if ($SkipGuided) { $Arguments += "--juggernaut-skip-guided" }
-if ($PSBoundParameters.ContainsKey("JuggernautSteps")) { $Arguments += @("--juggernaut-steps", $JuggernautSteps) }
-if ($PSBoundParameters.ContainsKey("JuggernautGuidanceScale")) {
-    $Arguments += @("--juggernaut-guidance-scale", $JuggernautGuidanceScale)
+if ($JuggernautLocalOnly -or -not $AllowModelDownloads) { $Arguments += "--generation-local-only" }
+if ($JuggernautNoPreload) { $Arguments += "--generation-no-preload" }
+if ($SkipGuided) { $Arguments += "--generation-skip-guided" }
+if ($PSBoundParameters.ContainsKey("GenerationSteps")) {
+    $Arguments += @("--generation-steps", $GenerationSteps)
+} elseif ($PSBoundParameters.ContainsKey("JuggernautSteps")) {
+    $Arguments += @("--generation-steps", $JuggernautSteps)
 }
-if ($PSBoundParameters.ContainsKey("JuggernautGuidedStrength")) {
-    $Arguments += @("--juggernaut-guided-strength", $JuggernautGuidedStrength)
+if ($PSBoundParameters.ContainsKey("GenerationGuidanceScale")) {
+    $Arguments += @("--generation-guidance-scale", $GenerationGuidanceScale)
+} elseif ($PSBoundParameters.ContainsKey("JuggernautGuidanceScale")) {
+    $Arguments += @("--generation-guidance-scale", $JuggernautGuidanceScale)
+} elseif ($GenerationEngine -eq "DreamShaper") {
+    $Arguments += @("--generation-guidance-scale", 7.0)
 }
-if ($null -ne $JuggernautSeed) { $Arguments += @("--juggernaut-seed", $JuggernautSeed) }
+if ($PSBoundParameters.ContainsKey("GenerationGuidedStrength")) {
+    $Arguments += @("--generation-guided-strength", $GenerationGuidedStrength)
+} elseif ($PSBoundParameters.ContainsKey("JuggernautGuidedStrength")) {
+    $Arguments += @("--generation-guided-strength", $JuggernautGuidedStrength)
+}
+if ($null -ne $JuggernautSeed) { $Arguments += @("--generation-seed", $JuggernautSeed) }
 
 if ($DryRun) {
     $Arguments | ConvertTo-Json

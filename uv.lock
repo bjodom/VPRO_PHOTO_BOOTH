@@ -1602,9 +1602,6 @@ kiosk = [
     { name = "segno" },
     { name = "uvicorn" },
 ]
-torch = [
-    { name = "torch" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -1616,12 +1613,11 @@ requires-dist = [
     { name = "optimum", extras = ["openvino"], marker = "extra == 'gen'", specifier = ">=1.23.0" },
     { name = "pillow", marker = "extra == 'gen'", specifier = ">=10.0.0" },
     { name = "segno", marker = "extra == 'kiosk'", specifier = ">=1.6" },
-    { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4" },
     { name = "transformers", marker = "extra == 'gen'", specifier = ">=4.39.1,<5.0" },
     { name = "ultralytics", specifier = ">=8.3.0" },
     { name = "uvicorn", marker = "extra == 'kiosk'", specifier = ">=0.30" },
 ]
-provides-extras = ["torch", "gen", "kiosk"]
+provides-extras = ["gen", "kiosk"]
 
 [[package]]
 name = "zipp"

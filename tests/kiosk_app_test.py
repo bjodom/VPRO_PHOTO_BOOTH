@@ -37,10 +37,13 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 class FakeCamera:
     """Stands in for CameraStream without touching a device."""
 
-    def __init__(self) -> None:
+    def __init__(self, index: int = 0, rotate: int = 0) -> None:
+        self.index = index
+        self.rotate = rotate
         self.is_running = True
         self.stats = type("S", (), {"fps": 30.0, "inference_seconds": 0.01, "last_error": None})()
         self.frame: np.ndarray | None = np.zeros((80, 64, 3), dtype=np.uint8)
+        self.stopped = False
 
     def latest_frame(self, max_age=None):
         return self.frame
@@ -48,8 +51,13 @@ class FakeCamera:
     def mjpeg_frames(self, boundary: str = "frame"):
         yield b"--" + boundary.encode() + b"\r\nContent-Type: image/jpeg\r\n\r\nx\r\n"
 
+    def start(self):
+        self.is_running = True
+        return self
+
     def stop(self) -> None:
         self.is_running = False
+        self.stopped = True
 
 
 class StubService(KioskService):
@@ -71,6 +79,9 @@ class StubService(KioskService):
 
     def _start_pipeline(self) -> None:
         self.pipeline_calls += 1  # do not spawn threads in tests
+
+    def _build_camera_stream(self) -> FakeCamera:
+        return FakeCamera(self.config.camera_index, self.config.capture_rotate)
 
 
 def client_for(tmp: Path) -> tuple[TestClient, StubService]:
@@ -101,8 +112,25 @@ def test_state_endpoint(tmp: Path) -> None:
     check("scene has label", "label" in body["scenes"][0])
     check("idle has no timer", body["seconds_remaining"] is None)
     check("reports status", "camera_open" in body["status"])
+    check("reports camera index", body["status"]["camera_index"] == 0)
+    check("reports camera rotation", body["status"]["camera_rotate"] == 0)
     check("reports queue rejections", "queue_rejections" in body["status"])
     check("reports pipeline timings", "pipeline_timings" in body["status"])
+
+
+def test_staff_can_switch_camera_index(tmp: Path) -> None:
+    client, service = client_for(tmp)
+    service.config.capture_rotate = 90
+    old_camera = service.camera
+    body = client.post("/api/action/next_camera").json()
+    check("next camera increments index", body["status"]["camera_index"] == 1)
+    check("next camera preserves rotation", body["status"]["camera_rotate"] == 90)
+    check("old camera stopped", old_camera.stopped)
+    check("new camera opened", service.camera.index == 1 and service.camera.rotate == 90 and service.camera.is_running)
+
+    body = client.post("/api/action/previous_camera").json()
+    check("previous camera decrements index", body["status"]["camera_index"] == 0)
+    check("previous camera preserves rotation", service.camera.rotate == 90)
 
 
 def test_full_flow_through_http(tmp: Path) -> None:
@@ -121,11 +149,11 @@ def test_full_flow_through_http(tmp: Path) -> None:
     check("pipeline started once", service.pipeline_calls == 1)
 
     service.session.generation_succeeded(
-        tmp / "final.jpg", delivery_url="http://kiosk/i/tok", delivery_qr_svg="<svg/>"
+        tmp / "final.jpg", delivery_url="http://kiosk/i/tok", delivery_qr_svg='<svg data-url="http://kiosk/i/tok"/>'
     )
     body = client.get("/api/state").json()
     check("ready state", body["state"] == "ready")
-    check("qr exposed", body["qr_svg"] == "<svg/>")
+    check("qr exposed", body["qr_svg"] == '<svg data-url="http://kiosk/i/tok"/>')
     check("url exposed", body["delivery_url"] == "http://kiosk/i/tok")
 
     check("finish", client.post("/api/action/finish").json()["state"] == "done")

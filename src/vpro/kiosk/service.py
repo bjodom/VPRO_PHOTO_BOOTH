@@ -10,6 +10,7 @@ import threading
 import traceback
 import json
 import math
+import random
 from contextlib import nullcontext
 from statistics import median
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -29,6 +30,19 @@ from .session import KioskSession, State
 CAPTION = "Made at the Intel vPro Photo Booth #vPro #IntelAI"
 
 
+def _coerce_render_seed(seed: int | None) -> int | None:
+    """Return a positive seed when the config is unset or zero.
+
+    Booth renders should vary naturally while never using a zero-valued seed, which can trigger
+    degenerate all-black outputs in some diffusion runs.
+    """
+    if seed is None:
+        return random.SystemRandom().randrange(1, 2**31)
+    if int(seed) == 0:
+        return random.SystemRandom().randrange(1, 2**31)
+    return int(seed)
+
+
 @dataclass
 class KioskConfig:
     output_dir: Path = Path("outputs/kiosk")
@@ -46,10 +60,9 @@ class KioskConfig:
     mask_quality: str = "high"
 
     scene_image: Path = Path("assets/scenes/portrait_scene_1080x1350.jpg")
-    prop_image: Path = Path("assets/props/vpro_laptop.png")
 
-    # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
-    juggernaut_model_id: str = "OpenVINO/Juggernaut-XL-v9-int8-ov"
+    # Juggernaut engine uses the local models/juggernaut-int8 export.
+    juggernaut_model_id: str = "OpenVINO/dreamshaper-8-inpainting-int8-ov"
     juggernaut_device: str = "GPU"
     #: Forces just the VAE encoder/decoder to this precision, working around the fp16 VAE
     #: overflow that otherwise produces all-black frames on some GPUs. Off by default: on this
@@ -60,6 +73,7 @@ class KioskConfig:
     juggernaut_cache_dir: Path = Path("outputs/openvino_cache/juggernaut")
     steps: int = 30
     guidance_scale: float = 5.0
+    juggernaut_seed: int | None = None
     #: Near 1.0: the masked region is generated outright, not nudged.
     strength: float = 0.99
     width: int = 1080
@@ -134,8 +148,6 @@ class KioskService:
             if target not in available and target not in {"AUTO", "MULTI", "HETERO"}:
                 raise RuntimeError(f"Configured device {configured} is unavailable; detected {sorted(available)}")
         validate_rmbg_assets(self.config.rmbg_model_dir)
-        if not self.config.prop_image.is_file():
-            raise FileNotFoundError(f"Laptop prop not found: {self.config.prop_image}")
 
         from ..backends.factory import build_backend
 
@@ -150,15 +162,7 @@ class KioskService:
         self._rmbg_runtime.warmup(runs=1)
         self._cleanup_old_outputs()
 
-        self.camera = CameraStream(
-            index=self.config.camera_index,
-            width=self.config.capture_width,
-            height=self.config.capture_height,
-            pose_backend=self._backend,
-            pose_device=self.config.yolo_device,
-            rotate=self.config.capture_rotate,
-            pose_fps=self.config.pose_fps,
-        ).start()
+        self.camera = self._build_camera_stream().start()
 
         self.delivery = build_delivery(
             self.config.delivery_channel,
@@ -245,6 +249,7 @@ class KioskService:
             "delivery_url": session.data.delivery_url,
             "qr_svg": session.data.delivery_qr_svg,
             "caption": session.data.caption,
+            "degraded": session.data.degraded,
             "has_final_image": session.data.final_path is not None,
             "generation_enabled": self.config.enable_generation,
             "countdown_seconds": self.config.countdown_seconds,
@@ -259,6 +264,8 @@ class KioskService:
                 {"key": s.key, "label": s.label, "description": s.description} for s in SCENES
             ],
             "status": {
+                "camera_index": self.config.camera_index,
+                "camera_rotate": self.config.capture_rotate,
                 "camera_open": self.status.camera_open,
                 "camera_fps": self.status.camera_fps,
                 "renderer_state": self.status.renderer_state,
@@ -323,10 +330,39 @@ class KioskService:
             session.choose_another_scene()
         elif action == "reset":
             session.reset(reason="guest")
+        elif action == "next_camera":
+            self._switch_camera(self.config.camera_index + 1)
+        elif action == "previous_camera":
+            self._switch_camera(max(0, self.config.camera_index - 1))
         else:
             raise ValueError(f"Unknown action {action!r}")
 
         return self.snapshot()
+
+    def _switch_camera(self, index: int) -> None:
+        self._require_worker_idle()
+        if index < 0:
+            raise ValueError("camera index must be >= 0")
+        if index == self.config.camera_index:
+            return
+        if self.camera is not None:
+            self.camera.stop()
+        self.config.camera_index = index
+        self.status.camera_open = False
+        self.status.camera_fps = 0.0
+        self.status.last_error = None
+        self.camera = self._build_camera_stream().start()
+
+    def _build_camera_stream(self) -> CameraStream:
+        return CameraStream(
+            index=self.config.camera_index,
+            width=self.config.capture_width,
+            height=self.config.capture_height,
+            pose_backend=self._backend,
+            pose_device=self.config.yolo_device,
+            rotate=self.config.capture_rotate,
+            pose_fps=self.config.pose_fps,
+        )
 
     def _require_worker_idle(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -417,6 +453,7 @@ class KioskService:
                 delivery_url=delivery.url,
                 delivery_qr_svg=delivery.qr_svg,
                 caption=CAPTION,
+                degraded=self.session.data.degraded,
             ),
         )
 
@@ -446,14 +483,17 @@ class KioskService:
         composed_path = config.output_dir / f"composed_{stamp}.jpg"
         coverage_path = config.output_dir / f"coverage_{stamp}.png"
 
-        # The destination is generated around the guest, so the backdrop only has to be neutral.
-        canvas_path = config.output_dir / "neutral_canvas.png"
-        if not canvas_path.exists():
-            if not cv2.imwrite(
-                str(canvas_path),
-                np.full((config.height, config.width, 3), 128, dtype=np.uint8),
-            ):
-                raise RuntimeError("Could not write composition canvas")
+        scene_reference = Path(__file__).parent / "static" / f"{scene.key}.jpg"
+        if scene.key == "custom" or not scene_reference.exists():
+            canvas_path = config.output_dir / "neutral_canvas.png"
+            if not canvas_path.exists():
+                if not cv2.imwrite(
+                    str(canvas_path),
+                    np.full((config.height, config.width, 3), 128, dtype=np.uint8),
+                ):
+                    raise RuntimeError("Could not write composition canvas")
+        else:
+            canvas_path = scene_reference
 
         timings: dict[str, float] = {}
         self.status.stage = "composing"
@@ -466,13 +506,16 @@ class KioskService:
                 rmbg_device=config.rmbg_device,
                 yolo_device=config.yolo_device,
                 scene_image_path=canvas_path,
-                prop_image_path=config.prop_image,
                 output_image_path=composed_path,
                 mask_quality=config.mask_quality,
                 verbose=False,
                 coverage_output_path=coverage_path,
                 rmbg_runtime=self._rmbg_runtime,
                 timings=timings,
+                subject_scale=scene.subject_scale,
+                subject_center_x=scene.subject_center_x,
+                feet_y=scene.feet_y,
+                scene_crop_center_x=scene.scene_crop_center_x,
             )
         timings["compose_total_seconds"] = perf_counter() - started
         self.status.last_pipeline_timings = dict(timings)
@@ -496,6 +539,7 @@ class KioskService:
                     steps=config.steps,
                     guidance_scale=config.guidance_scale,
                     strength=config.strength,
+                    seed=_coerce_render_seed(config.juggernaut_seed),
                     width=config.width,
                     height=config.height,
                     input_image_path=composed,
@@ -519,9 +563,17 @@ class KioskService:
             self.status.last_pipeline_timings = dict(timings)
             print(f"[kiosk] render {perf_counter() - started:.2f}s ok={result.ok}")
             if not result.ok or result.output_path is None:
-                raise RuntimeError(result.error or "Generation returned no image")
+                self.status.last_error = result.error or "Generation returned no image"
+                print(
+                    "[kiosk] render failed; delivering deterministic composed portrait fallback",
+                    flush=True,
+                )
+                final_path = composed
+                with self._lock:
+                    self.session.data.degraded = True
             else:
                 final_path = result.output_path
+                self._restore_composed_subject(final_path, composed, coverage_path)
 
         if self._abandoned(session_id):
             return None, None
@@ -549,6 +601,31 @@ class KioskService:
                 stream.write(json.dumps(record) + "\n")
         except OSError as exc:
             print(f"[kiosk] could not record metrics: {exc}")
+
+    def _restore_composed_subject(self, rendered_path: Path, composed_path: Path, coverage_path: Path) -> None:
+        """Restore the deterministic subject so inpainting cannot change its scale or anatomy."""
+        import cv2
+        import numpy as np
+
+        rendered = cv2.imread(str(rendered_path), cv2.IMREAD_COLOR)
+        composed = cv2.imread(str(composed_path), cv2.IMREAD_COLOR)
+        coverage = cv2.imread(str(coverage_path), cv2.IMREAD_GRAYSCALE)
+        if rendered is None or composed is None or coverage is None:
+            raise RuntimeError("Could not read images needed to restore the composed subject")
+        if rendered.shape != composed.shape:
+            composed = cv2.resize(composed, (rendered.shape[1], rendered.shape[0]), interpolation=cv2.INTER_AREA)
+        if rendered.shape[:2] != coverage.shape:
+            coverage = cv2.resize(coverage, (rendered.shape[1], rendered.shape[0]), interpolation=cv2.INTER_AREA)
+
+        locked = ((coverage >= self.config.opaque_threshold).astype(np.uint8)) * 255
+        locked = cv2.GaussianBlur(locked, (5, 5), 0).astype(np.float32) / 255.0
+        alpha = locked[..., None]
+        restored = (
+            composed.astype(np.float32) * alpha
+            + rendered.astype(np.float32) * (1.0 - alpha)
+        ).clip(0, 255).astype(np.uint8)
+        if not cv2.imwrite(str(rendered_path), restored):
+            raise RuntimeError(f"Could not restore composed subject into {rendered_path}")
 
     def _deliver(self, session_id: int, final_path: Path) -> Any:
         from ..delivery.base import DeliveryResult

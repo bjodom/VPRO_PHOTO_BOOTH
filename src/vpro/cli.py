@@ -23,8 +23,8 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--backend",
         default="openvino",
-        choices=["openvino", "torch"],
-        help="Inference backend to use (OpenVINO is the default).",
+        choices=["openvino"],
+        help="Inference backend to use.",
     )
     parser.add_argument(
         "--model-path",
@@ -249,12 +249,6 @@ def build_parser() -> ArgumentParser:
         help="Portrait background scene image path.",
     )
     parser.add_argument(
-        "--compose-prop-image",
-        type=Path,
-        default=Path("assets/props/vpro_laptop.png"),
-        help="Laptop prop PNG path with alpha channel.",
-    )
-    parser.add_argument(
         "--compose-output-image",
         type=Path,
         default=Path("outputs/final_portrait_1080x1350.jpg"),
@@ -277,23 +271,27 @@ def build_parser() -> ArgumentParser:
         help="Run local OpenVINO Juggernaut test renders (smoke + optional guided).",
     )
     parser.add_argument(
-        "--juggernaut-model-id",
-        # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
-        default="OpenVINO/Juggernaut-XL-v9-int8-ov",
+        "--generation-model-id", "--juggernaut-model-id",
+        dest="juggernaut_model_id",
+        # Juggernaut engine uses the local models/juggernaut-int8 export.
+        default="OpenVINO/dreamshaper-8-inpainting-int8-ov",
         help="Hugging Face model id or local model directory for OpenVINO Juggernaut pipeline.",
     )
     parser.add_argument(
-        "--juggernaut-device",
+        "--generation-device", "--juggernaut-device",
+        dest="juggernaut_device",
         default="GPU",
         help="OpenVINO device used to compile and run the Juggernaut pipeline.",
     )
     parser.add_argument(
-        "--juggernaut-local-only",
+        "--generation-local-only", "--juggernaut-local-only",
+        dest="juggernaut_local_only",
         action="store_true",
         help="Use cache/local files only (no network download).",
     )
     parser.add_argument(
-        "--juggernaut-vae-precision",
+        "--generation-vae-precision", "--juggernaut-vae-precision",
+        dest="juggernaut_vae_precision",
         default="",
         help="OpenVINO INFERENCE_PRECISION_HINT applied only to the VAE encoder/decoder, working "
         "around the fp16 VAE overflow that produces all-black frames. Empty (default) leaves the "
@@ -301,14 +299,15 @@ def build_parser() -> ArgumentParser:
         "the 170s event timeout, so only set this after re-measuring the tradeoff.",
     )
     parser.add_argument(
-        "--juggernaut-openvino-cache-dir",
+        "--generation-openvino-cache-dir", "--juggernaut-openvino-cache-dir",
+        dest="juggernaut_openvino_cache_dir",
         type=Path,
         default=Path("outputs/openvino_cache/juggernaut"),
         help="Persistent OpenVINO compiled-model cache for Juggernaut.",
     )
     parser.add_argument(
         "--juggernaut-prompt",
-        default="Hyperdetailed photography, person presenting a Lenovo laptop in a modern expo booth, cinematic portrait lighting",
+        default="Hyperdetailed photography, person in a modern expo booth, cinematic portrait lighting",
         help="Prompt used for Juggernaut test renders.",
     )
     parser.add_argument(
@@ -317,37 +316,43 @@ def build_parser() -> ArgumentParser:
         help="Negative prompt used for Juggernaut test renders.",
     )
     parser.add_argument(
-        "--juggernaut-preset",
+        "--generation-preset", "--juggernaut-preset",
+        dest="juggernaut_preset",
         default="balanced",
         choices=["identity-lock", "balanced", "stylized"],
         help="Quality/identity preset for Juggernaut (balanced default).",
     )
     parser.add_argument(
-        "--juggernaut-steps",
+        "--generation-steps", "--juggernaut-steps",
+        dest="juggernaut_steps",
         type=int,
         default=None,
         help="Inference step count override for Juggernaut renders.",
     )
     parser.add_argument(
-        "--juggernaut-guidance-scale",
+        "--generation-guidance-scale", "--juggernaut-guidance-scale",
+        dest="juggernaut_guidance_scale",
         type=float,
         default=None,
         help="Classifier-free guidance scale override for Juggernaut renders.",
     )
     parser.add_argument(
-        "--juggernaut-seed",
+        "--generation-seed", "--juggernaut-seed",
+        dest="juggernaut_seed",
         type=int,
         default=None,
         help="Optional random seed for deterministic Juggernaut output.",
     )
     parser.add_argument(
-        "--juggernaut-width",
+        "--generation-width", "--juggernaut-width",
+        dest="juggernaut_width",
         type=int,
         default=1080,
         help="Output width for Juggernaut test render.",
     )
     parser.add_argument(
-        "--juggernaut-height",
+        "--generation-height", "--juggernaut-height",
+        dest="juggernaut_height",
         type=int,
         default=1350,
         help="Output height for Juggernaut test render.",
@@ -365,24 +370,28 @@ def build_parser() -> ArgumentParser:
         help="Guide image for Juggernaut img2img test (typically composed portrait output).",
     )
     parser.add_argument(
-        "--juggernaut-guided-output",
+        "--generation-guided-output", "--juggernaut-guided-output",
+        dest="juggernaut_guided_output",
         type=Path,
         default=Path("outputs/juggernaut_guided.jpg"),
         help="Output path for Juggernaut image-guided render.",
     )
     parser.add_argument(
-        "--juggernaut-guided-strength",
+        "--generation-guided-strength", "--juggernaut-guided-strength",
+        dest="juggernaut_guided_strength",
         type=float,
         default=None,
         help="Img2img strength override for Juggernaut guided render.",
     )
     parser.add_argument(
-        "--juggernaut-skip-guided",
+        "--generation-skip-guided", "--juggernaut-skip-guided",
+        dest="juggernaut_skip_guided",
         action="store_true",
         help="Skip image-guided Juggernaut test even if guide image exists.",
     )
     parser.add_argument(
-        "--juggernaut-no-preload",
+        "--generation-no-preload", "--juggernaut-no-preload",
+        dest="juggernaut_no_preload",
         action="store_true",
         help=(
             "Load Juggernaut after capture instead of during it. Preloading hides ~29s of startup "
@@ -529,35 +538,9 @@ def _capture_single_image(
         steady_elapsed: float,
         steady_required: float,
     ) -> np.ndarray:
-        overlay = frame.copy()
-        if capture_requested and not wrist_detected:
-            text = "Waiting for wrist..."
-            color = (32, 110, 160)
-        elif capture_requested and steady_required > 0 and steady_elapsed < steady_required:
-            text = f"Hold wrist steady {steady_elapsed:.1f}/{steady_required:.1f}s"
-            color = (32, 110, 160)
-        elif wrist_detected:
-            text = "Wrist detected"
-            color = (46, 170, 76)
-        else:
-            text = "Show hand/wrist"
-            color = (66, 66, 66)
-
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 0.75
-        thickness = 2
-        (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
-        margin = 16
-        x1 = margin
-        y1 = margin
-        x2 = x1 + tw + 20
-        y2 = y1 + th + baseline + 20
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 255, 255), 2)
-        tx = x1 + 10
-        ty = y2 - baseline - 8
-        cv2.putText(overlay, text, (tx, ty), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
-        return overlay
+        # The original capture flow should not tell the subject where to place their hand.
+        # Guests may use a real prop and hold the laptop however they prefer.
+        return frame
 
     def _render_preview(frame: np.ndarray) -> tuple[np.ndarray, bool]:
         if yolo_preview_backend is None:
@@ -632,9 +615,6 @@ def _capture_single_image(
         print("Preview ready. Click 'Start Capture' or press SPACE/ENTER to begin countdown.")
         capture_at: float | None = None
         last_printed_second: int | None = None
-        waiting_for_wrist_printed = False
-        waiting_for_stable_printed = False
-        wrist_seen_since: float | None = None
 
         while True:
             ok, frame = cap.read()
@@ -645,16 +625,7 @@ def _capture_single_image(
 
             now = perf_counter()
             preview_source = cv2.flip(frame, 1)
-            render, wrist_detected = _render_preview(preview_source)
-
-            if wrist_detected:
-                if wrist_seen_since is None:
-                    wrist_seen_since = now
-            else:
-                wrist_seen_since = None
-
-            steady_elapsed = 0.0 if wrist_seen_since is None else (now - wrist_seen_since)
-            wrist_is_stable = steady_elapsed >= wrist_stable_seconds
+            render, _ = _render_preview(preview_source)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
@@ -663,32 +634,16 @@ def _capture_single_image(
                 button_state["clicked"] = True
 
             if button_state["clicked"] and capture_at is None:
-                if wrist_is_stable:
-                    capture_at = now + float(delay_seconds)
-                    waiting_for_wrist_printed = False
-                    waiting_for_stable_printed = False
-                    if delay_seconds > 0:
-                        print(f"Hold your pose. Capturing in {delay_seconds} second(s)...")
-                elif not wrist_detected and not waiting_for_wrist_printed:
-                    print("Capture requested. Waiting for wrist detection...")
-                    waiting_for_wrist_printed = True
-                elif wrist_detected and not waiting_for_stable_printed and wrist_stable_seconds > 0:
-                    print(
-                        "Wrist detected. Hold steady "
-                        f"for {wrist_stable_seconds:.1f}s to start countdown..."
-                    )
-                    waiting_for_stable_printed = True
-
-            if not button_state["clicked"]:
-                waiting_for_wrist_printed = False
-                waiting_for_stable_printed = False
+                capture_at = now + float(delay_seconds)
+                if delay_seconds > 0:
+                    print(f"Hold your pose. Capturing in {delay_seconds} second(s)...")
 
             active = capture_at is not None
             render = _draw_wrist_status(
                 render,
-                wrist_detected=wrist_detected,
+                wrist_detected=False,
                 capture_requested=button_state["clicked"],
-                steady_elapsed=steady_elapsed,
+                steady_elapsed=0.0,
                 steady_required=wrist_stable_seconds,
             )
             if active:
@@ -808,12 +763,12 @@ def _run_juggernaut_tests(args) -> None:
     )
 
     print(
-        "Loading Juggernaut pipeline: "
+        "Loading image-generation pipeline: "
         f"{args.juggernaut_model_id} (device={args.juggernaut_device}, "
         f"local_only={args.juggernaut_local_only})"
     )
     print(
-        "Juggernaut preset: "
+        "Generation preset: "
         f"{args.juggernaut_preset} "
         f"(steps={steps}, guidance={guidance_scale}, guided_strength={guided_strength})"
     )
@@ -972,7 +927,6 @@ def _run_social_pipeline(args) -> None:
         rmbg_device=args.rmbg_device,
         yolo_device=args.device,
         scene_image_path=args.compose_scene_image,
-        prop_image_path=args.compose_prop_image,
         output_image_path=args.compose_output_image,
         mask_quality=args.mask_quality,
         mask_output_path=None if args.capture_skip_rmbg else args.capture_rmbg_mask_output,
@@ -1066,7 +1020,6 @@ def _compose_portrait_from_image(
     rmbg_device: str,
     yolo_device: str,
     scene_image_path: Path,
-    prop_image_path: Path,
     output_image_path: Path,
     mask_quality: str,
     mask_output_path: Path | None = None,
@@ -1081,7 +1034,6 @@ def _compose_portrait_from_image(
         rmbg_device=rmbg_device,
         yolo_device=yolo_device,
         scene_image_path=scene_image_path,
-        prop_image_path=prop_image_path,
         output_image_path=output_image_path,
         mask_quality=mask_quality,
         mask_output_path=mask_output_path,
@@ -1168,7 +1120,6 @@ def _run_kiosk(args) -> None:
         rmbg_device=args.rmbg_device,
         mask_quality=args.mask_quality,
         scene_image=args.compose_scene_image,
-        prop_image=args.compose_prop_image,
         juggernaut_model_id=args.juggernaut_model_id,
         juggernaut_device=args.juggernaut_device,
         juggernaut_vae_precision_hint=args.juggernaut_vae_precision or None,
@@ -1177,6 +1128,9 @@ def _run_kiosk(args) -> None:
         steps=args.juggernaut_steps if args.juggernaut_steps is not None else 30,
         guidance_scale=args.juggernaut_guidance_scale if args.juggernaut_guidance_scale is not None else 5.0,
         strength=args.juggernaut_guided_strength if args.juggernaut_guided_strength is not None else 0.99,
+        juggernaut_seed=args.juggernaut_seed,
+        width=args.juggernaut_width,
+        height=args.juggernaut_height,
         countdown_seconds=args.capture_delay_seconds,
         delivery_channel=args.delivery_channel,
         delivery_host=args.delivery_host,
@@ -1354,7 +1308,6 @@ def main() -> None:
             rmbg_device=args.rmbg_device,
             yolo_device=args.device,
             scene_image_path=args.compose_scene_image,
-            prop_image_path=args.compose_prop_image,
             output_image_path=args.compose_output_image,
             mask_quality=args.mask_quality,
         )

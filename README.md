@@ -3,13 +3,24 @@
 ## Run It This Way
 
 ```powershell
-# One-time setup: sync the .venv dependencies and download the Juggernaut model.
+# One-time setup: sync the .venv dependencies.
 # Add -UseIntelProxy on the Intel network when required.
-.\run.ps1 -Sync -DownloadJuggernaut -CameraIndex 1 -CaptureRotate 90
+.\run.ps1 -Sync -CameraIndex 2 -CaptureRotate 90
 
-# Daily event launch using external camera ID 1, rotated for portrait orientation.
-.\run.ps1 -CameraIndex 1 -CaptureRotate 90
+# Daily event launch using external camera ID 2, rotated for portrait orientation.
+# The camera likes to change index ids, if it's the laptop camera try 1 or 0
+.\run.ps1 -CameraIndex 2 -CaptureRotate 90
 ```
+
+DreamShaper is the production event engine:
+
+```powershell
+.\run.ps1 -GenerationEngine DreamShaper -CameraIndex 2 -CaptureRotate 90
+```
+
+DreamShaper uses native `512x768` generation with CFG 7 by default and is delivered directly
+with no upscaling. Juggernaut remains available only as a diagnostic/experimental path because
+it has shown intermittent black/non-finite inpainting failures on the event hardware.
 
 `-CameraIndex` selects the Windows camera. The built-in camera is often `0`; an external camera is
 often `1` or `2`. If camera `1` does not show the external camera, retry with `-CameraIndex 2`.
@@ -18,12 +29,11 @@ often `1` or `2`. If camera `1` does not show the external camera, retry with `-
 when the external camera is mounted sideways; use `0` when it is already upright.
 
 The launcher uses `.venv` directly and opens the kiosk at http://127.0.0.1:8000. The setup command
-installs the `gen` and `kiosk` extras and downloads the Juggernaut model; omit `-Sync` and
-`-DownloadJuggernaut` on later launches. Local YOLO and RMBG XML/BIN artifacts and the laptop prop
+installs the `gen` and `kiosk` extras; omit `-Sync` on later launches. Local YOLO and RMBG XML/BIN artifacts must
 must already be present.
 
 The project uses OpenVINO `2026.4.x` by default. YOLO26 defaults to `intel:npu`, RMBG to `CPU`,
-and Juggernaut to `GPU`.
+and the generation model to `GPU`.
 
 RMBG stays off the generation GPU to avoid shared-GPU contention. Use `-RmbgDevice GPU`
 only as an explicit override. This is a deployment profile, not a claim that it is optimal
@@ -34,6 +44,9 @@ Useful launcher options:
 ```powershell
 # Set the LAN address that guest phones can reach.
 .\run.ps1 -DeliveryAdvertiseHost 192.168.1.100
+
+# Override generation tuning for DreamShaper.
+.\run.ps1 -GenerationGuidanceScale 7
 
 # Isolate acceptance-run photos and select a different UI port.
 .\run.ps1 -OutputDir outputs/event_validation -KioskPort 8001
@@ -49,13 +62,16 @@ Run `.\run.ps1 -?` to see all launcher parameters. The lower-level `uv run vpro`
 remain available for individual smoke tests and development workflows; prefer `uv run --no-sync`
 after setup so a plain sync does not remove optional packages.
 
+Use `-GenerationSteps`, `-GenerationGuidanceScale`, and `-GenerationGuidedStrength` for generation
+tuning.
+
 ## Event Acceptance
 
 Destination selection also includes **Somewhere else**: enter a place name (2-100 characters),
 then choose **Use this place**. Custom locations remain local to the guest session and clear on reset.
 Both preset and custom destinations use masked inpainting on a neutral canvas conditioned on the
 captured portrait; the selection thumbnails are never used as guest-photo backgrounds. The person
-and laptop are positioned by the compositor and protected by the mask while the model generates
+The captured subject is positioned by the compositor and protected by the mask while the model generates
 the surroundings. Perspective, ground-plane, and contact-shadow prompts encourage a coherent scene,
 but this is not automatic reposing or full relighting of the preserved person. Unfamiliar or very
 specific places may be approximate because no online geographic lookup is performed.
@@ -102,23 +118,16 @@ QR links expire after 15 minutes; link expiry is separate from on-disk image ret
 
 ## Install Optional Backend Extras
 
-Install PyTorch extra:
-
-```powershell
-uv sync --extra torch
-```
-
 ## CLI
 
 ```powershell
 uv run vpro --backend openvino --model-path models
-uv run vpro --backend torch --model-path models
 ```
 
 ## Kiosk Performance Controls
 
-The kiosk keeps YOLO, RMBG, and Juggernaut resources resident for the life of the process. RMBG is
-loaded and warmed once at startup, while static scene and prop assets are cached between guests.
+The kiosk keeps YOLO, RMBG, and the selected generation pipeline resident for the life of the process. RMBG is
+loaded and warmed once at startup, while static scene assets are cached between guests.
 Raw camera acquisition runs separately from subscriber-driven preview processing. YOLO pose
 inference is limited to 15 FPS by default and cached results are drawn on intervening previews.
 JPEG previews are capped at 1280 pixels on the long edge; saved captures retain camera resolution.
@@ -213,39 +222,8 @@ Validate RMBG model files and run one OpenVINO warmup inference:
 uv run vpro --validate-rmbg --rmbg-model-dir models/rmbg/rmbg-1.4 --rmbg-device AUTO
 ```
 
-## Compose Final Portrait (1080x1350)
-
-Run deterministic portrait composition with all four behaviors:
-- primary-subject auto-selection (multi-person tolerant)
-- subject auto-scale and portrait placement
-- deterministic laptop prop anchor from YOLO keypoints
-- final export as 1080x1350 image
-
-```powershell
-uv run vpro --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_model --compose-portrait --compose-input-image outputs/visitor_capture.jpg --compose-scene-image assets/scenes/portrait_scene_1080x1350.jpg --compose-prop-image assets/props/vpro_laptop.png --compose-output-image outputs/final_portrait_1080x1350.jpg --device intel:gpu --rmbg-model-dir models/rmbg/rmbg-1.4 --rmbg-device AUTO
-```
-
-For tighter foreground masking in cluttered scenes, add:
-
-```powershell
---mask-quality high
-```
-
 Notes:
 - `--compose-scene-image` must point to a portrait background image.
-- `--compose-prop-image` must point to an alpha PNG laptop render.
-
-## One-Shot Social Pipeline (Capture -> Compose -> Juggernaut)
-
-Run a production-style single command flow with automatic fallback:
-1. Capture image from camera
-2. Deterministic portrait compose
-3. Juggernaut guided render
-4. If Juggernaut fails, fallback to deterministic output
-
-```powershell
-uv run vpro --run-social-pipeline --backend openvino --model-path models/yolo26/yolo26x-pose_openvino_model --device intel:gpu --camera-index 0 --compose-scene-image assets/scenes/portrait_scene_1080x1350.jpg --compose-prop-image assets/props/lenovo.laptop.png
-```
 
 Useful outputs:
 - deterministic compose: `--compose-output-image` (default `outputs/final_portrait_1080x1350.jpg`)
@@ -255,6 +233,10 @@ Useful outputs:
 The command prints stage timings for capture, RMBG, compose, Juggernaut, and total runtime.
 
 ## Juggernaut Local OpenVINO Test
+
+Juggernaut is retained for diagnostics and benchmarking only. It is not recommended for the
+production event kiosk because recent live tests showed intermittent black/non-finite inpainting
+outputs and slow fallback behavior.
 
 Install test dependencies for local OpenVINO diffusion rendering:
 
@@ -267,8 +249,12 @@ Run both test stages (single pipeline load):
 - stage 2: image-guided render using the composed portrait as guide
 
 ```powershell
-uv run vpro --test-juggernaut --juggernaut-model-id OpenVINO/Juggernaut-XL-v9-int8-ov --juggernaut-guided-input-image outputs/final_portrait_1080x1350_lenovo_test.jpg
+uv run vpro --test-juggernaut --juggernaut-model-id models/juggernaut-int8 --juggernaut-guided-input-image outputs/final_portrait_1080x1350_test.jpg
 ```
+
+The kiosk inpainting path uses `OpenVINO/dreamshaper-8-inpainting-int8-ov`. The standalone
+text-to-image benchmark above remains on INT8 Juggernaut because DreamShaper is an inpainting-only
+model and is not a valid text-to-image benchmark input.
 
 The standalone prompt test stores reusable compiled OpenVINO artifacts in `outputs/openvino_cache/juggernaut` by default. This cache survives normal process exits and avoids rebuilding GPU kernels when the model, target device or driver, OpenVINO version, and compilation-relevant shapes/settings are unchanged. Optimum still reloads the multi-gigabyte SDXL OpenVINO model files in each new Python process, so use a long-lived application process when low latency across separate requests matters. Override the cache location with `--openvino-cache-dir PATH`.
 
@@ -318,7 +304,6 @@ src/vpro/
 	backends/
 		base.py
 		factory.py
-		torch_backend.py
 		openvino_backend.py
 	vision/
 		portrait_compositor.py

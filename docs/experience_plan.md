@@ -1,7 +1,7 @@
 # vPRO Visitor Photo Experience Plan
 
 ## 1) Experience Summary
-A visitor walks up, chooses a destination scene (city, beach, mountain, etc.), poses in front of a camera, and receives a stylized image where they appear in that location holding an Intel vPro laptop prop.
+A visitor walks up, chooses a destination scene (city, beach, mountain, etc.), poses in front of a camera, and receives a stylized image where they appear in that location. Any real prop remains part of the captured subject.
 
 Primary goals:
 - Fast, delightful experience on-site
@@ -13,7 +13,7 @@ Primary goals:
 1. Idle screen invites visitor to begin and explains timing (for example: 30-90 seconds).
 2. Visitor accepts consent and privacy notice.
 3. Visitor chooses location from curated world scenes.
-4. Pose guide overlay appears (for example: one hand up for laptop placement).
+4. Pose guide overlay appears for stable full-body framing.
 5. Webcam live preview runs, then one still frame is captured as the render input image.
 6. Pipeline generates final composite image from the captured still frame.
 7. Watermark/hashtags are applied.
@@ -47,7 +47,7 @@ Primary goals:
 ### Composition Layer
 - Scene template selected from approved library
 - Foreground person scaled and blended into scene
-- vPro laptop prop composited near hand keypoint with perspective + shadow
+- Captured subject and any real prop preserved through segmentation and final subject restoration
 - Optional color matching and grain pass for realism
 
 ### Delivery Layer
@@ -78,7 +78,7 @@ Primary goals:
 - Background removal: OpenVINO-executed RMBG v1.4 model
 - Pose/keypoints: YOLO26 keypoint model executed with OpenVINO
 - Compositing: OpenCV + Pillow for deterministic placement, color matching, and watermarking
-- Prop insertion: hand-keypoint-based laptop placement with angle templates
+- Scene-aware subject placement: destination-specific scale, crop, and ground position
 
 ### RMBG Background Removal Convention
 Primary model:
@@ -152,8 +152,8 @@ RMBG implementation alignment:
 - Release acceptance requires OpenVINO parity on all critical visitor-path features.
 
 ### Generative Enhancement Model
-- Model: OpenVINO/Juggernaut-XL-v9-fp16-ov
-- Status: already converted for OpenVINO runtime; no additional conversion step required
+- Models: OpenVINO DreamShaper INT8 for fast mode and local OpenVINO Juggernaut INT8 for quality mode
+- Status: both run through the local OpenVINO inpainting path
 - Role: quality render pass using the captured still frame and compositing outputs (img2img or inpaint enhancement)
 - Runtime target: OpenVINO execution path on Intel hardware (first-choice path)
 - Guardrail: keep deterministic non-generative fallback path available at all times
@@ -213,7 +213,7 @@ Generation guardrails:
 - Regenerate any output with artifacting, distorted architecture, unreadable signage, or inconsistent lighting before it reaches the approved pack.
 
 Visitor insertion policy (important):
-- Use local deterministic compositing for live visitor insertion and laptop prop placement.
+- Use local deterministic compositing for live visitor insertion and scene-aware subject placement.
 - Do not send live visitor images to any remote processing service.
 
 Do not train custom generative models for MVP unless rights and timeline justify it.
@@ -225,15 +225,12 @@ Use curated Juggernaut prompt templates first.
 - Optional frame style with event branding
 - Keep branding readable but not intrusive
 
-## 7) Prop Laptop Placement (vPro Device)
+## 7) Scene-Aware Subject Placement
 Practical implementation:
-- Use transparent PNG render(s) of approved Intel vPro laptop angles
-- Detect hand/wrist keypoint and estimate orientation
-- Snap to nearest matching prop angle
-- Add shadow/contact shadow layer for realism
-
-Future upgrade:
-- 3D prop render with dynamic perspective from pose depth estimate
+- Use the destination thumbnail as the scene reference canvas for preset locations.
+- Configure subject scale, horizontal placement, feet position, and scene crop per destination.
+- Preserve the captured subject and any real prop with the segmentation coverage mask.
+- Restore the composed subject after inpainting so its scale and anatomy cannot drift.
 
 ## 8) Privacy, Consent, and Trust (Critical)
 Non-negotiables:
@@ -303,7 +300,7 @@ Week 1:
 
 Week 2:
 - Integrate segmentation + pose
-- Implement deterministic compositing + prop placement
+- Implement deterministic compositing + scene-aware subject placement
 
 Week 3:
 - Add branding overlays and SMS delivery flow
@@ -316,7 +313,7 @@ Week 4:
 
 Weeks 5-6 (optional):
 - Add diffusion enhancement mode
-- Improve realism and prop perspective
+- Improve realism, grounding, lighting, and scene-reference integration
 
 ## 13) Risks and Mitigations
 Risk: Unrealistic composites
@@ -353,7 +350,7 @@ Use this section as the release gate for MVP readiness.
 - Acceptance target: network disconnect does not block image generation pipeline.
 
 ### Model and Pipeline Readiness
-- YOLO26 keypoint OpenVINO model is integrated and outputs stable keypoints for laptop placement.
+- YOLO26 keypoint OpenVINO model is integrated and supports primary-subject selection and framing.
 - RMBG v1.4 OpenVINO model is integrated and produces clean alpha for busy backgrounds.
 - Juggernaut enhancement path is optional and toggled by quality mode.
 - Acceptance target: keypoint placement and mask quality pass internal visual QA on curated test set.

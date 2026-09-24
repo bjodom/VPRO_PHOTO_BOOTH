@@ -15,6 +15,7 @@ from time import sleep
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from vpro.kiosk.service import _coerce_render_seed  # noqa: E402
 from vpro.vision import juggernaut_runner as jr  # noqa: E402
 from vpro.vision.juggernaut_runner import (  # noqa: E402
     STATE_FAILED,
@@ -81,6 +82,16 @@ def request(name: str, **overrides: object) -> RenderRequest:
     }
     base.update(overrides)
     return RenderRequest(**base)  # type: ignore[arg-type]
+
+
+def test_seed_policy_keeps_render_seeds_positive_and_random() -> None:
+    random_seed = _coerce_render_seed(None)
+    zero_seed = _coerce_render_seed(0)
+    explicit_seed = _coerce_render_seed(1234)
+
+    check("unset seed becomes a positive random value", random_seed is not None and random_seed > 0)
+    check("zero seed becomes a positive random value", zero_seed is not None and zero_seed > 0)
+    check("explicit seed is preserved", explicit_seed == 1234)
 
 
 def test_serializes_renders() -> None:

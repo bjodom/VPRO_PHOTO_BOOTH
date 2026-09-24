@@ -9,6 +9,7 @@ which blocks that; test the actual network before relying on this channel.
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 from .base import DeliveryRequest, DeliveryResult
@@ -63,7 +64,8 @@ def render_qr_svg(data: str, scale: int = 8, border: int = 2) -> str:
     segno.make(data, error="m").save(
         buffer, kind="svg", scale=scale, border=border, xmldecl=False, svgns=True
     )
-    return buffer.getvalue().decode("utf-8")
+    svg = buffer.getvalue().decode("utf-8")
+    return svg.replace("<svg ", f"<svg data-url=\"{html.escape(data, quote=True)}\" ", 1)
 
 
 def render_qr_terminal(data: str, compact: bool = True) -> str:

@@ -41,7 +41,7 @@ Goal: invite visitors and explain the value in one glance.
 | vPRO Travel Photo Experience                                    [Staff Button] |
 |--------------------------------------------------------------------------------|
 |                                                                                |
-|                  Put yourself anywhere. Hold a vPro laptop.                   |
+|                  Stand naturally and face the camera.                         |
 |                                                                                |
 |                         [ Start Your Photo Experience ]                        |
 |                                                                                |
@@ -96,7 +96,7 @@ Validation:
 - Continue disabled until one location selected.
 
 ## 4) Pose Guide + Camera Preview
-Goal: guide body position and hand placement for laptop prop.
+Goal: guide body position and stable full-body framing; guests use any real prop they bring.
 
 ```text
 +--------------------------------------------------------------------------------+

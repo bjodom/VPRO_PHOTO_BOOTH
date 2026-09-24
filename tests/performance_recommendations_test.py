@@ -20,10 +20,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from vpro.kiosk.camera import CameraStream  # noqa: E402
 from vpro.kiosk.service import KioskConfig, KioskService  # noqa: E402
-from vpro.vision.portrait_compositor import (  # noqa: E402
-    _load_prop_image,
-    _load_scene_canvas,
-)
+from vpro.vision.portrait_compositor import _load_scene_canvas  # noqa: E402
 from vpro.vision.pipeline import compose_portrait_from_image  # noqa: E402
 
 PASSED: list[str] = []
@@ -230,10 +227,14 @@ def test_cli_capture_contract() -> None:
         cli._run_social_pipeline(args)
     check("social capture matches real signature", capture.call_count == 1)
 
-    args = cli.build_parser().parse_args(["--kiosk", "--kiosk-pose-fps", "9"])
+    args = cli.build_parser().parse_args([
+        "--kiosk", "--kiosk-pose-fps", "9", "--generation-width", "896", "--generation-height", "1120"
+    ])
     with patch("vpro.kiosk.service.KioskService") as service, patch("vpro.kiosk.app.run"):
         cli._run_kiosk(args)
     check("kiosk receives pose rate", service.call_args.args[0].pose_fps == 9)
+    check("kiosk receives native generation size",
+          service.call_args.args[0].width == 896 and service.call_args.args[0].height == 1120)
     check("CLI dispatch defaults RMBG to CPU", service.call_args.args[0].rmbg_device == "CPU")
     check("kiosk config defaults RMBG to CPU", KioskConfig().rmbg_device == "CPU")
     args = cli.build_parser().parse_args(["--kiosk", "--rmbg-device", "GPU"])
@@ -253,21 +254,13 @@ def test_asset_caches() -> None:
     with TemporaryDirectory(prefix="vpro-assets-") as raw:
         root = Path(raw)
         scene_path = root / "scene.jpg"
-        prop_path = root / "prop.png"
         cv2.imwrite(str(scene_path), np.full((40, 50, 3), 128, dtype=np.uint8))
-        prop = np.zeros((12, 16, 4), dtype=np.uint8)
-        prop[:, :, 3] = 255
-        cv2.imwrite(str(prop_path), prop)
 
         _load_scene_canvas.cache_clear()
-        _load_prop_image.cache_clear()
         first_scene = _load_scene_canvas(str(scene_path), (20, 30))
         second_scene = _load_scene_canvas(str(scene_path), (20, 30))
-        first_prop = _load_prop_image(str(prop_path))
-        second_prop = _load_prop_image(str(prop_path))
 
         check("scene asset is cached", first_scene is second_scene)
-        check("prop asset is cached", first_prop is second_prop)
         check("scene cache has output size", first_scene.shape[:2] == (30, 20))
 
 
@@ -404,8 +397,7 @@ def test_service_startup_contract() -> None:
         root = Path(raw)
         (root / "model.xml").write_text("<model/>")
         (root / "model.bin").write_bytes(b"model")
-        (root / "prop.png").write_bytes(b"prop")
-        config = KioskConfig(output_dir=root, rmbg_model_dir=root, prop_image=root / "prop.png")
+        config = KioskConfig(output_dir=root, rmbg_model_dir=root)
         with patch("openvino.Core") as core, \
              patch("vpro.backends.factory.build_backend", return_value=Mock()), \
              patch("vpro.vision.rmbg_runtime.load_rmbg_runtime") as rmbg, \
@@ -430,6 +422,7 @@ def test_render_failure_is_not_success() -> None:
     from unittest.mock import Mock, patch
     from vpro.kiosk.session import State
     from vpro.vision.juggernaut_types import RenderResult
+    from vpro.delivery.base import DeliveryResult
 
     with TemporaryDirectory() as raw:
         root = Path(raw)
@@ -444,6 +437,7 @@ def test_render_failure_is_not_success() -> None:
         service.runner = Mock()
         service.runner.submit.return_value = future
         service.delivery = Mock()
+        service.delivery.deliver.return_value = DeliveryResult(ok=True, channel="local-qr", url="http://booth/i/fallback")
 
         def compose(**kwargs):
             cv2.imwrite(str(kwargs["coverage_output_path"]), np.full((80, 64), 255, dtype=np.uint8))
@@ -451,9 +445,10 @@ def test_render_failure_is_not_success() -> None:
 
         with patch("vpro.vision.pipeline.compose_portrait_from_image", side_effect=compose):
             service._run_pipeline(service.session.session_id)
-        check("failed render has error state", service.session.state is State.GENERATION_ERROR)
-        check("gray fallback is never delivered", not service.delivery.deliver.called)
-        check("failed render recorded", '"success": false' in (root / "pipeline_metrics.jsonl").read_text())
+        check("failed render falls back to ready", service.session.state is State.READY)
+        check("fallback delivery attempted", service.delivery.deliver.called)
+        check("fallback is marked degraded", service.session.data.degraded)
+        check("failed render still recorded", "black output" in service.status.last_error)
         service.session.reset()
         try:
             service.act("start", {"session_id": service.session.session_id - 1})
@@ -544,14 +539,10 @@ def test_composition_accepts_reusable_rmbg_runtime() -> None:
         root = Path(raw)
         input_path = root / "input.jpg"
         scene_path = root / "scene.jpg"
-        prop_path = root / "prop.png"
         output_path = root / "output.jpg"
         image = np.full((40, 50, 3), 128, dtype=np.uint8)
         cv2.imwrite(str(input_path), image)
         cv2.imwrite(str(scene_path), image)
-        prop = np.zeros((12, 16, 4), dtype=np.uint8)
-        prop[:, :, 3] = 255
-        cv2.imwrite(str(prop_path), prop)
         runtime = FakeRmbg()
         timings: dict[str, float] = {}
 
@@ -562,7 +553,6 @@ def test_composition_accepts_reusable_rmbg_runtime() -> None:
             rmbg_device="CPU",
             yolo_device="CPU",
             scene_image_path=scene_path,
-            prop_image_path=prop_path,
             output_image_path=output_path,
             mask_quality="fast",
             rmbg_runtime=runtime,

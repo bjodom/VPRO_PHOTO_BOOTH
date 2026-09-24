@@ -324,22 +324,6 @@ class CameraStream:
             cv2.line(out, (x1, y), (x1, min(y + dash, y2)), colour, 3)
             cv2.line(out, (x2, y), (x2, min(y + dash, y2)), colour, 3)
 
-        text = self.framing.message
-        scale = max(0.8, width / 1400.0)
-        thickness = max(2, int(scale * 2))
-        (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
-        tx = int((width - tw) / 2)
-        ty = int(height * 0.10)
-        cv2.rectangle(
-            out,
-            (tx - 18, ty - th - 16),
-            (tx + tw + 18, ty + baseline + 12),
-            (18, 22, 34),
-            -1,
-        )
-        cv2.putText(
-            out, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thickness, cv2.LINE_AA
-        )
         return out
 
 

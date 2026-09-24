@@ -68,6 +68,7 @@ class SessionData:
     delivery_qr_svg: str | None = None
     caption: str | None = None
     error: str | None = None
+    degraded: bool = False
 
 
 @dataclass
@@ -149,6 +150,7 @@ class KioskSession:
         delivery_url: str | None = None,
         delivery_qr_svg: str | None = None,
         caption: str | None = None,
+        degraded: bool = False,
     ) -> State:
         self._require(State.GENERATING)
         self.data.final_path = final_path
@@ -156,6 +158,7 @@ class KioskSession:
         self.data.delivery_qr_svg = delivery_qr_svg
         self.data.caption = caption
         self.data.error = None
+        self.data.degraded = degraded
         return self._go(State.READY)
 
     def generation_failed(self, error: str) -> State:

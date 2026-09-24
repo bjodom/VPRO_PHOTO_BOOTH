@@ -47,16 +47,20 @@ class Scene:
     key: str
     label: str
     description: str
+    subject_scale: float = 0.78
+    subject_center_x: float = 0.50
+    feet_y: float = 0.92
+    scene_crop_center_x: float = 0.50
 
     def prompt(self) -> str:
-        return f"a person holding a laptop in front of {self.description}, {PHOTOREAL_STYLE}"
+        return f"a person in front of {self.description}, {PHOTOREAL_STYLE}"
 
     def background_prompt(self) -> str:
         """Scene without people: the guest is preserved by the mask, so describing a person here
         makes the model paint a second one into the background."""
         return (
-            f"{self.description}, photorealistic travel photo, eye-level perspective, "
-            "human-scale ground plane, contact shadows, natural light, sharp detail, no people"
+            f"{self.description}, recognizable landmark, photorealistic photo, vertical portrait, "
+            "eye-level ground plane, realistic scale, sharp detail"
         )
 
     def background_negative_prompt(self) -> str:
@@ -66,14 +70,14 @@ class Scene:
 
 
 SCENES: tuple[Scene, ...] = (
-    Scene("pyramids", "Giza", "the Great Pyramids of Giza rising over the desert, clear sky"),
-    Scene("eiffel", "Paris", "the Eiffel Tower seen from the Trocadero, soft morning haze"),
-    Scene("colosseum", "Rome", "the Roman Colosseum at sunrise, weathered stone arches"),
-    Scene("tajmahal", "Agra", "the Taj Mahal reflected in its water pool, white marble at dawn"),
-    Scene("machu", "Machu Picchu", "Machu Picchu terraces with drifting clouds in the valley"),
-    Scene("santorini", "Santorini", "a white-washed Santorini cliffside above the Aegean at sunset"),
-    Scene("fuji", "Mount Fuji", "Mount Fuji behind Chureito Pagoda, cherry blossoms in bloom"),
-    Scene("goldengate", "San Francisco", "the Golden Gate Bridge emerging from low fog"),
+    Scene("pyramids", "Giza", "the three Great Pyramids of Giza, limestone blocks, sandy foreground, distant desert plateau, clear blue sky", 0.70, 0.50, 0.94),
+    Scene("eiffel", "Paris", "the Eiffel Tower viewed from the Trocadero gardens, broad Parisian avenue, pale limestone buildings, soft morning haze", 0.72, 0.50, 0.94),
+    Scene("colosseum", "Rome", "Ancient Rome, recognizable Roman Colosseum, elliptical amphitheater facade, three tiers of travertine arches, Roman columns, broad stone piazza, warm side light", 0.70, 0.62, 0.94, 0.44),
+    Scene("tajmahal", "Agra", "the Taj Mahal with white marble dome and four minarets, long reflecting pool, symmetrical Mughal gardens, gentle dawn light", 0.66, 0.35, 0.94, 0.50),
+    Scene("machu", "Machu Picchu", "Machu Picchu stone terraces, ancient Inca walls, Huayna Picchu rising behind, layered green Andes, drifting valley clouds", 0.62, 0.32, 0.93, 0.52),
+    Scene("santorini", "Santorini", "a Santorini cliffside village, white stucco walls, blue domes, winding stone path, Aegean Sea horizon, warm sunset light", 0.68, 0.36, 0.92, 0.56),
+    Scene("fuji", "Mount Fuji", "Mount Fuji behind Chureito Pagoda, red pagoda roof, layered green foothills, cherry blossoms, crisp clear spring morning", 0.66, 0.32, 0.93, 0.50),
+    Scene("goldengate", "San Francisco", "the Golden Gate Bridge spanning the bay, red suspension towers, calm water, San Francisco hills, low coastal fog, warm afternoon light", 0.66, 0.30, 0.90, 0.40),
 )
 
 SCENES_BY_KEY = {scene.key: scene for scene in SCENES}

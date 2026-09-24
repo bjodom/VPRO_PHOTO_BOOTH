@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>vPRO Travel Photo Experience</title>
-<link rel="stylesheet" href="/static/styles.css?v=custom-location-1">
+<link rel="stylesheet" href="/static/styles.css?v=event-4">
 </head>
 <body>
 <div id="app">
@@ -68,8 +68,8 @@
     <section class="screen" data-state="pose">
       <h2>Strike a pose</h2>
       <p id="selected-destination" class="muted"></p>
-      <p class="lede">Palm up, as if you're holding a laptop.</p>
-      <div class="preview"><img id="preview-pose" alt="Camera preview"><div id="countdown" role="status" aria-live="assertive" hidden></div><span class="hand-target" aria-hidden="true">Palm up here</span></div>
+      <p class="lede">Stand naturally and face the camera.</p>
+      <div class="preview"><img id="preview-pose" alt="Camera preview"><div id="countdown" role="status" aria-live="assertive" hidden></div></div>
       <p id="framing-hint" class="framing">Step into view</p>
       <div class="row">
         <button class="ghost" data-action="choose_another_scene">Change scene</button>
@@ -153,11 +153,16 @@
 
   <aside id="staff-panel" role="dialog" aria-label="Staff controls" hidden>
     <h3>Staff</h3>
+    <p id="staff-camera" class="muted"></p>
+    <div class="row staff-camera-controls">
+      <button class="ghost" data-action="previous_camera" type="button">Previous Camera</button>
+      <button class="ghost" data-action="next_camera" type="button">Next Camera</button>
+    </div>
     <pre id="staff-status"></pre>
     <button class="ghost" id="force-reset" type="button">Force Reset</button>
     <button class="ghost" id="staff-close" type="button">Close</button>
   </aside>
 </div>
-<script src="/static/app.js?v=custom-location-1"></script>
+<script src="/static/app.js?v=event-4"></script>
 </body>
 </html>

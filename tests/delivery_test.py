@@ -164,8 +164,10 @@ def test_factory(tmp: Path) -> None:
 
 
 def test_qr_encodes_url() -> None:
-    svg = render_qr_svg("http://192.168.1.50:8765/i/abc")
+    url = "http://192.168.1.50:8765/i/abc"
+    svg = render_qr_svg(url)
     check("qr renders svg", svg.startswith("<svg") or "<svg" in svg)
+    check("qr carries visible url metadata", f'data-url="{url}"' in svg)
     check("qr is non-trivial", len(svg) > 500, str(len(svg)))
 
 

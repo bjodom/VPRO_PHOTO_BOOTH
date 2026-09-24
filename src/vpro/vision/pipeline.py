@@ -30,7 +30,6 @@ def compose_portrait_from_image(
     rmbg_device: str,
     yolo_device: str,
     scene_image_path: Path,
-    prop_image_path: Path,
     output_image_path: Path,
     mask_quality: str,
     verbose: bool = True,
@@ -39,12 +38,15 @@ def compose_portrait_from_image(
     timings: dict[str, float] | None = None,
     mask_output_path: Path | None = None,
     foreground_output_path: Path | None = None,
+    subject_scale: float = 0.78,
+    subject_center_x: float = 0.50,
+    feet_y: float = 0.92,
+    scene_crop_center_x: float = 0.50,
 ) -> Path:
     import cv2
 
     input_image_path = input_image_path.expanduser().resolve()
     scene_image_path = scene_image_path.expanduser().resolve()
-    prop_image_path = prop_image_path.expanduser().resolve()
 
     if not input_image_path.exists():
         raise RuntimeError(f"Input image not found: {input_image_path}")
@@ -53,11 +55,6 @@ def compose_portrait_from_image(
             "Scene image not found. Provide a valid portrait asset path. "
             f"Missing: {scene_image_path}"
         )
-    if not prop_image_path.exists():
-        raise RuntimeError(
-            f"Laptop prop image not found. Provide a valid alpha PNG. Missing: {prop_image_path}"
-        )
-
     source = cv2.imread(str(input_image_path), cv2.IMREAD_COLOR)
     if source is None:
         raise RuntimeError(f"Could not read input image: {input_image_path}")
@@ -110,9 +107,12 @@ def compose_portrait_from_image(
         yolo_result=result,
         primary=primary,
         scene_path=scene_image_path,
-        prop_path=prop_image_path,
         output_size=OUTPUT_SIZE,
         mask_quality=mask_quality,
+        subject_scale=subject_scale,
+        subject_center_x=subject_center_x,
+        feet_y=feet_y,
+        scene_crop_center_x=scene_crop_center_x,
     )
 
     saved_path = save_composed_image(composed.image_bgr, output_image_path)
@@ -123,11 +123,8 @@ def compose_portrait_from_image(
     if timings is not None:
         timings["composition_seconds"] = perf_counter() - compose_start
     if verbose:
-        anchor = composed.anchor_xy
-        anchor_text = "none" if anchor is None else f"{anchor[0]},{anchor[1]}"
         print(
             "Portrait composition saved: "
-            f"{saved_path} (primary_subject_index={composed.primary_index}, "
-            f"prop_anchor={anchor_text})"
+            f"{saved_path} (primary_subject_index={composed.primary_index})"
         )
     return saved_path

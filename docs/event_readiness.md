@@ -5,8 +5,8 @@ on the final camera, display, Intel hardware, power configuration, and event net
 
 ## Before Arrival
 
-1. Install the locked environment with `uv sync --extra gen --extra kiosk`; download the Juggernaut
-   snapshot and verify local YOLO/RMBG XML and BIN files. Confirm model and brand usage rights for the event.
+1. Install the locked environment with `uv sync --extra gen --extra kiosk`; verify local YOLO/RMBG
+  XML and BIN files. Confirm model and brand usage rights for the event.
 2. Run `.\tests\cli_pipeline_test.ps1`. This does not open a real camera or load models.
 3. Launch `.\run.ps1 -OutputDir outputs/event_validation`. Model loading is offline by default.
    Wait for the Start button to enable. Check `http://127.0.0.1:8000/health/ready` returns 200.
@@ -39,7 +39,7 @@ It requires an actual render timing, a QR, a reachable handoff page, and a downl
 It reports first-guest time separately from warm p50/p95. Sixty seconds is a provisional acceptance
 budget, not a measured promise; set the event's agreed budget explicitly.
 
-Repeat with `-Device intel:gpu` and the default `intel:npu`, keeping RMBG and Juggernaut on GPU.
+Repeat with `-Device intel:gpu` and the default `intel:npu`, keeping RMBG on CPU and DreamShaper on GPU.
 Compare tail latency, UI responsiveness, preview FPS, failures, and output quality, not just isolated
 model inference. Record the CPU/GPU/NPU names, OpenVINO version, model, dimensions, steps, and strength.
 The historical 5-6 second img2img figure does not apply to 30-step, strength-0.99 kiosk inpainting.

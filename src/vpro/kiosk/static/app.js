@@ -2,6 +2,8 @@
 
 const POLL_IDLE_MS = 700;
 const POLL_BUSY_MS = 400;
+const AUTO_CAPTURE_HOLD_MS = 1500;
+const AUTO_CAPTURE_GRACE_MS = 1000;
 
 let current = null;
 let timer = null;
@@ -9,6 +11,10 @@ let scenesRendered = false;
 let pending = false;
 let countdownTimer = null;
 let countdownSession = null;
+let autoCaptureGoodSince = null;
+let autoCaptureLastGoodAt = null;
+let autoCaptureSession = null;
+let autoCaptureSuppressedSession = null;
 let connected = false;
 let polling = false;
 
@@ -56,12 +62,18 @@ function updateControls() {
   const busy = !!current?.busy || ["loading", "failed"].includes(current?.status?.renderer_state);
   document.querySelector('[data-action="start"]').disabled ||= busy || current?.status?.camera_open === false;
   document.querySelector('[data-action="accept_capture"]').disabled ||= !!current?.busy;
+  document.querySelector('[data-action="previous_camera"]').disabled ||= current?.status?.camera_index <= 0 || !!current?.busy;
+  document.querySelector('[data-action="next_camera"]').disabled ||= !!current?.busy;
 }
 
-function cancelCountdown() {
+function cancelCountdown({ suppressAuto = false } = {}) {
+  if (suppressAuto) autoCaptureSuppressedSession = countdownSession || current?.session_id || null;
   clearInterval(countdownTimer);
   countdownTimer = null;
   countdownSession = null;
+  autoCaptureGoodSince = null;
+  autoCaptureLastGoodAt = null;
+  autoCaptureSession = null;
   document.getElementById("countdown").hidden = true;
   document.getElementById("cancel-countdown").hidden = true;
   updateControls();
@@ -113,9 +125,17 @@ function renderScenes(scenes) {
 }
 
 function render(snapshot) {
+  const previousCameraIndex = current?.status?.camera_index;
   const changed = !current || current.state !== snapshot.state ||
     current.session_id !== snapshot.session_id;
+  const cameraChanged = previousCameraIndex !== undefined && previousCameraIndex !== snapshot.status?.camera_index;
   current = snapshot;
+  if (changed || snapshot.state !== "pose") {
+    autoCaptureGoodSince = null;
+    autoCaptureLastGoodAt = null;
+    autoCaptureSession = null;
+    autoCaptureSuppressedSession = null;
+  }
   if (countdownTimer !== null && (snapshot.state !== "pose" || snapshot.session_id !== countdownSession)) cancelCountdown();
 
   renderScenes(snapshot.scenes);
@@ -157,6 +177,7 @@ function render(snapshot) {
   document.getElementById("capture-btn").textContent = framing.ok
     ? "Take Photo"
     : "Take Photo Anyway";
+  updateAutoCapture(framing);
 
   if (changed) {
     applyStateAssets(snapshot);
@@ -169,7 +190,37 @@ function render(snapshot) {
 
   const staff = document.getElementById("staff-status");
   if (!document.getElementById("staff-panel").hidden) {
+    document.getElementById("staff-camera").textContent = `Camera index: ${snapshot.status?.camera_index ?? "unknown"} · rotate: ${snapshot.status?.camera_rotate ?? "unknown"}°`;
     staff.textContent = JSON.stringify(snapshot.status, null, 2);
+  }
+
+  if (cameraChanged && snapshot.state === "pose") {
+    const preview = document.getElementById("preview-pose");
+    preview.src = `/api/preview.mjpg?t=${Date.now()}`;
+  }
+}
+
+function updateAutoCapture(framing) {
+  if (current?.state !== "pose" || !connected || pending || countdownTimer !== null) return;
+  const now = Date.now();
+  if (!framing.ok) {
+    if (autoCaptureLastGoodAt !== null && now - autoCaptureLastGoodAt <= AUTO_CAPTURE_GRACE_MS) return;
+    autoCaptureGoodSince = null;
+    autoCaptureLastGoodAt = null;
+    autoCaptureSession = null;
+    autoCaptureSuppressedSession = null;
+    return;
+  }
+  if (autoCaptureSuppressedSession === current.session_id) return;
+
+  autoCaptureLastGoodAt = now;
+  if (autoCaptureSession !== current.session_id) {
+    autoCaptureSession = current.session_id;
+    autoCaptureGoodSince = now;
+    return;
+  }
+  if (autoCaptureGoodSince !== null && now - autoCaptureGoodSince >= AUTO_CAPTURE_HOLD_MS) {
+    beginCountdown();
   }
 }
 
@@ -192,7 +243,8 @@ function applyStateAssets(snapshot) {
   if (snapshot.state === "ready") {
     document.getElementById("final-img").src = `/api/final.jpg?t=${Date.now()}`;
     document.getElementById("qr").innerHTML = snapshot.qr_svg || "";
-    document.getElementById("ready-url").textContent = snapshot.delivery_url || "";
+    const qrUrl = document.querySelector("#qr svg")?.dataset?.url;
+    document.getElementById("ready-url").textContent = qrUrl || snapshot.delivery_url || "";
     const caption = document.getElementById("caption");
     caption.textContent = snapshot.caption || "";
     caption.hidden = true;
@@ -241,7 +293,7 @@ document.getElementById("custom-location-form").addEventListener("submit", event
   event.preventDefault();
   act("choose_scene", { scene: "custom", custom_location: document.getElementById("custom-location").value });
 });
-document.getElementById("cancel-countdown").addEventListener("click", cancelCountdown);
+document.getElementById("cancel-countdown").addEventListener("click", () => cancelCountdown({ suppressAuto: true }));
 
 document.getElementById("caption-btn").addEventListener("click", () => {
   const caption = document.getElementById("caption");

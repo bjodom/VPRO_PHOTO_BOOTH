@@ -21,26 +21,29 @@ class CompositionResult:
     image_bgr: np.ndarray
     primary_index: int
     anchor_xy: tuple[int, int] | None
-    #: Where subject and prop pixels landed on the canvas; inpainting locks these.
+    #: Where subject pixels landed on the canvas; inpainting locks these.
     coverage_mask: np.ndarray | None = None
 
 
 @lru_cache(maxsize=16)
-def _load_scene_canvas(scene_path: str, output_size: tuple[int, int]) -> np.ndarray:
+def _load_scene_canvas(scene_path: str, output_size: tuple[int, int], crop_center_x: float = 0.50) -> np.ndarray:
     scene = cv2.imread(scene_path, cv2.IMREAD_COLOR)
     if scene is None:
         raise RuntimeError(f"Could not read scene image: {scene_path}")
+    target_w, target_h = output_size
+    source_h, source_w = scene.shape[:2]
+    target_ratio = target_w / float(target_h)
+    source_ratio = source_w / float(source_h)
+    if source_ratio > target_ratio:
+        crop_w = max(1, int(round(source_h * target_ratio)))
+        center_x = int(round(source_w * max(0.0, min(1.0, crop_center_x))))
+        left = max(0, min(source_w - crop_w, center_x - crop_w // 2))
+        scene = scene[:, left:left + crop_w]
+    elif source_ratio < target_ratio:
+        crop_h = max(1, int(round(source_w / target_ratio)))
+        top = max(0, (source_h - crop_h) // 2)
+        scene = scene[top:top + crop_h, :]
     return cv2.resize(scene, output_size, interpolation=cv2.INTER_AREA)
-
-
-@lru_cache(maxsize=16)
-def _load_prop_image(prop_path: str) -> np.ndarray:
-    prop = cv2.imread(prop_path, cv2.IMREAD_UNCHANGED)
-    if prop is None:
-        raise RuntimeError(f"Could not read laptop prop image: {prop_path}")
-    if prop.ndim != 3 or prop.shape[2] != 4:
-        raise RuntimeError("Laptop prop image must be a BGRA/PNG with alpha channel.")
-    return prop
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -216,42 +219,6 @@ def cleanup_mask_for_primary_subject(
     return cleaned
 
 
-def _compute_prop_anchor(
-    yolo_result: Any,
-    primary_index: int,
-) -> tuple[tuple[float, float], float] | None:
-    """Return anchor (x, y) and rotation angle in degrees from wrist/elbow keypoints."""
-    if primary_index < 0:
-        return None
-
-    keypoints = getattr(yolo_result, "keypoints", None)
-    if keypoints is None:
-        return None
-
-    xy = _to_numpy(getattr(keypoints, "xy", None))
-    kp_conf = _to_numpy(getattr(keypoints, "conf", None))
-    if xy.size == 0 or primary_index >= len(xy):
-        return None
-
-    pts = xy[primary_index]
-    conf = kp_conf[primary_index] if kp_conf.size else np.ones((pts.shape[0],), dtype=np.float32)
-
-    # COCO keypoint indices: left elbow=7, right elbow=8, left wrist=9, right wrist=10
-    candidates = [
-        (9, 7, float(conf[9]) if len(conf) > 9 else 0.0),
-        (10, 8, float(conf[10]) if len(conf) > 10 else 0.0),
-    ]
-    wrist_idx, elbow_idx, wrist_conf = max(candidates, key=lambda item: item[2])
-    if wrist_conf < 0.15:
-        return None
-
-    wrist = pts[wrist_idx]
-    elbow = pts[elbow_idx] if elbow_idx < len(pts) else wrist
-    vec = wrist - elbow
-    angle = float(np.degrees(np.arctan2(vec[1], vec[0])))
-    return (float(wrist[0]), float(wrist[1])), angle
-
-
 def _overlay_alpha(base_mask: np.ndarray, overlay_bgra: np.ndarray, x: int, y: int) -> np.ndarray:
     """Accumulate overlay coverage using the same placement maths as _overlay_bgra."""
     out = base_mask.copy()
@@ -307,14 +274,19 @@ def compose_portrait(
     yolo_result: Any,
     primary: SubjectSelection,
     scene_path: Path,
-    prop_path: Path,
     output_size: tuple[int, int] = (1080, 1350),
     mask_quality: str = "high",
+    subject_scale: float = 0.78,
+    subject_center_x: float = 0.50,
+    feet_y: float = 0.92,
+    scene_crop_center_x: float = 0.50,
 ) -> CompositionResult:
     """Compose one primary subject into a portrait scene with deterministic placement."""
     canvas_w, canvas_h = output_size
 
-    canvas = _load_scene_canvas(str(scene_path.expanduser().resolve()), (canvas_w, canvas_h)).copy()
+    canvas = _load_scene_canvas(
+        str(scene_path.expanduser().resolve()), (canvas_w, canvas_h), scene_crop_center_x
+    ).copy()
 
     alpha = cleaned_mask
     ys, xs = np.where(alpha > 12)
@@ -328,7 +300,7 @@ def compose_portrait(
     if subj_h < 2 or subj_w < 2:
         raise RuntimeError("Subject crop is too small for composition.")
 
-    target_h = int(canvas_h * 0.78)
+    target_h = int(canvas_h * max(0.50, min(1.0, float(subject_scale))))
     scale = max(0.1, target_h / float(subj_h))
     out_h = max(2, int(round(subj_h * scale)))
     out_w = max(2, int(round(subj_w * scale)))
@@ -336,60 +308,20 @@ def compose_portrait(
     subj_scaled = cv2.resize(subj_crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
     # Feet-close composition for portrait social framing.
-    feet_y = int(canvas_h * 0.92)
-    paste_y = feet_y - out_h
-    paste_x = int((canvas_w - out_w) / 2)
+    feet_pixel_y = int(canvas_h * max(0.80, min(1.0, float(feet_y))))
+    paste_y = feet_pixel_y - out_h
+    center_pixel_x = int(canvas_w * max(0.0, min(1.0, float(subject_center_x))))
+    paste_x = center_pixel_x - (out_w // 2)
 
     composed = _overlay_bgra(canvas, subj_scaled, paste_x, paste_y)
     coverage = _overlay_alpha(
         np.zeros(canvas.shape[:2], dtype=np.uint8), subj_scaled, paste_x, paste_y
     )
 
-    # Deterministic laptop prop anchor from keypoints.
-    anchor_xy: tuple[int, int] | None = None
-    prop_anchor = _compute_prop_anchor(yolo_result, primary.index)
-    if prop_anchor is not None:
-        (ax, ay), angle = prop_anchor
-        tx = int(round((ax - sx1) * scale + paste_x))
-        ty = int(round((ay - sy1) * scale + paste_y))
-    else:
-        # Deterministic fallback when keypoints are unavailable.
-        tx = int(paste_x + out_w * 0.68)
-        ty = int(paste_y + out_h * 0.53)
-        angle = 0.0
-
-    anchor_xy = (tx, ty)
-
-    prop = _load_prop_image(str(prop_path.expanduser().resolve()))
-
-    # Size prop relative to visible subject width.
-    target_prop_w = max(60, int(out_w * 0.30))
-    prop_scale = target_prop_w / float(prop.shape[1])
-    prop_h = max(20, int(round(prop.shape[0] * prop_scale)))
-    prop_w = max(20, int(round(prop.shape[1] * prop_scale)))
-    prop_resized = cv2.resize(prop, (prop_w, prop_h), interpolation=cv2.INTER_LINEAR)
-
-    center = (prop_w / 2.0, prop_h / 2.0)
-    rot = cv2.getRotationMatrix2D(center, angle, 1.0)
-    prop_rot = cv2.warpAffine(
-        prop_resized,
-        rot,
-        (prop_w, prop_h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0, 0),
-    )
-
-    # Place prop near wrist with a small vertical offset.
-    px = tx - prop_w // 2
-    py = ty - int(prop_h * 0.35)
-    composed = _overlay_bgra(composed, prop_rot, px, py)
-    coverage = _overlay_alpha(coverage, prop_rot, px, py)
-
     return CompositionResult(
         image_bgr=composed,
         primary_index=primary.index,
-        anchor_xy=anchor_xy,
+        anchor_xy=None,
         coverage_mask=coverage,
     )
 

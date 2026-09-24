@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -34,7 +35,7 @@ def _make_generator(seed: int | None) -> Any:
 
 
 def _aligned_dim(value: int) -> int:
-    # SDXL pipelines require dimensions divisible by 8.
+    # Stable Diffusion pipelines require dimensions divisible by 8.
     return max(64, int(value) - (int(value) % 8))
 
 
@@ -42,14 +43,14 @@ TASK_TEXT2IMG = "text2img"
 TASK_IMG2IMG = "img2img"
 TASK_INPAINT = "inpaint"
 
-# SDXL fp16 VAE overflow yields all-black frames on some seeds; a real render never lands this low.
+# A real render never produces an all-black frame.
 BLACK_FRAME_MAX_LUMA = 8
 DEFAULT_RENDER_ATTEMPTS = 3
-RETRY_SEED_STRIDE = 10_007
+RETRY_FALLBACK_SEED = 5678
 
 
 def _is_degenerate_image(image: Any) -> bool:
-    """True for all-black or non-finite output, the known fp16 VAE failure mode."""
+    """Return True for all-black or non-finite pipeline output."""
     import numpy as np
 
     luma = np.asarray(image.convert("L"), dtype=np.float32)
@@ -67,11 +68,15 @@ def _render_with_black_guard(
 ) -> Any:
     """Run the pipeline, re-rolling the seed if it produces a degenerate frame."""
     attempts = max(1, int(attempts))
+    fallback_seed_source = random.SystemRandom()
     for attempt in range(attempts):
-        # Observed black frames are transient, not seed-determined: seed 1236 rendered black once
-        # and correctly on a later run. So retry the seed as-is first to preserve reproducibility,
-        # and only vary it if the same seed keeps failing.
-        attempt_seed = seed if (seed is None or attempt < 2) else seed + RETRY_SEED_STRIDE * (attempt - 1)
+        # Keep the requested seed for the first attempt, then avoid repeating the same failing seed.
+        if attempt == 0:
+            attempt_seed = seed
+        elif seed is not None:
+            attempt_seed = fallback_seed_source.randrange(1, 2**31)
+        else:
+            attempt_seed = None
         generator = _make_generator(attempt_seed)
         if generator is not None:
             kwargs["generator"] = generator
@@ -86,20 +91,21 @@ def _render_with_black_guard(
         image = images[0]
         if not _is_degenerate_image(image):
             if attempt:
-                print(f"Juggernaut {label} recovered on attempt {attempt + 1} (seed={attempt_seed}).", flush=True)
+                print(f"Image generation {label} recovered on attempt {attempt + 1} (seed={attempt_seed}).", flush=True)
             return image
 
         suffix = "; retrying." if attempt + 1 < attempts else "; no attempts left."
         print(
-            f"Juggernaut {label} produced a black frame on attempt {attempt + 1}/{attempts} "
-            f"(seed={attempt_seed}){suffix}",
+            f"Image generation {label} produced a black or non-finite frame on attempt "
+            f"{attempt + 1}/{attempts} (seed={attempt_seed}); the model safety checker may "
+            f"also return black output when it flags an image{suffix}",
             flush=True,
         )
 
     raise RuntimeError(
-        f"Juggernaut {label} produced a black frame on all {attempts} attempts. "
-        "This is the known SDXL fp16 VAE overflow; the caller should fall back rather than "
-        "deliver the image."
+        f"Image generation {label} produced black or non-finite output on all {attempts} attempts. "
+        "The pipeline safety checker may have returned black images; the caller should fall back "
+        "rather than deliver the image."
     )
 
 
@@ -136,6 +142,7 @@ def load_juggernaut_pipeline(
     timings: dict[str, float] | None = None,
     task: str = TASK_TEXT2IMG,
     vae_precision_hint: str | None = None,
+    disable_safety_checker: bool = False,
 ) -> Any:
     """Load and compile the pipeline; `timings`, if given, is filled with per-phase seconds.
 
@@ -198,6 +205,10 @@ def load_juggernaut_pipeline(
         ov_config=ov_config,
         compile=False,
     )
+    if disable_safety_checker:
+        pipeline.safety_checker = None
+        pipeline.feature_extractor = None
+        print("DreamShaper safety checker disabled for this diagnostic run.", flush=True)
     metadata_sec = perf_counter() - load_start
     if timings is not None:
         timings["metadata_seconds"] = metadata_sec

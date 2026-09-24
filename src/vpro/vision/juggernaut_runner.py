@@ -63,8 +63,7 @@ class JuggernautRunner:
 
     def __init__(
         self,
-        # FP16 alternative: OpenVINO/Juggernaut-XL-v9-fp16-ov
-        model_id: str = "OpenVINO/Juggernaut-XL-v9-int8-ov",
+        model_id: str = "models/juggernaut-int8",
         device: str = "GPU",
         local_files_only: bool = True,
         openvino_cache_dir: Path | None = None,
@@ -75,6 +74,7 @@ class JuggernautRunner:
         warmup_height: int = 1350,
         attempts: int = DEFAULT_RENDER_ATTEMPTS,
         vae_precision_hint: str | None = None,
+        disable_safety_checker: bool = False,
     ) -> None:
         if task not in TASKS:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
@@ -88,6 +88,7 @@ class JuggernautRunner:
         self._warmup_size = (int(warmup_width), int(warmup_height))
         self._attempts = attempts
         self._vae_precision_hint = vae_precision_hint
+        self._disable_safety_checker = disable_safety_checker
 
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=max(1, int(queue_size)))
         self._thread: threading.Thread | None = None
@@ -226,6 +227,7 @@ class JuggernautRunner:
                 openvino_cache_dir=self._openvino_cache_dir,
                 task=self.task,
                 vae_precision_hint=self._vae_precision_hint,
+                disable_safety_checker=self._disable_safety_checker,
             )
             if self._warmup:
                 self._run_warmup()
@@ -374,7 +376,7 @@ class JuggernautRunner:
             guidance_scale=1.0,
             width=width,
             height=height,
-            seed=0,
+            seed=1,
             strength=0.5 if self.task in (TASK_IMG2IMG, TASK_INPAINT) else None,
             input_image_path=guide_path,
             mask_image_path=mask_path,

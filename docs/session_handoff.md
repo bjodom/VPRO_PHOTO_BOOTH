@@ -97,7 +97,7 @@ The browser should open at `http://127.0.0.1:8000`. Wait for Start to enable, th
 
 If startup stalls, preserve the terminal error/output and diagnose the actual launcher path before changing settings. The probe's offline import-order fix is in the stash; do not assume it modified production startup. Do not reintroduce FP32 as a workaround.
 
-After launcher validation, the next feature discussion is integrated person/scene generation. Current behavior preserves the photographed body and prop while generating the background. No face-protected portrait prototype or identity-conditioning change has been implemented, and phone delivery/full event acceptance remain unverified.
+After launcher validation, the next feature discussion is scene-reference quality and integrated person/scene generation. Current behavior preserves the photographed subject and any real captured prop while generating the background. Phone delivery/full event acceptance remain unverified.
 
 ## Current Status After Reboot and Cleanup
 
@@ -110,7 +110,7 @@ This section supersedes the historical pre-reboot instructions below.
 - At the user's request, the VAE FP32 override was removed. Normal loading uses the original precision configuration without forcing VAE FP32. The updated precision contract and hardware-free performance suite passed 51 checks.
 - A subsequent real camera session passed with YOLO on NPU, RMBG on GPU, and Juggernaut on GPU, using normal warmup and offline loading. Machu Picchu generation took 35.02 seconds; total processing through delivery took 35.58 seconds. A final image and QR link were created without a generation error. Phone download access was not verified.
 - The one-session launch used a temporary in-memory shutdown wrapper, not a permanent application feature. The process exited after the first session; kiosk port 8880 and delivery port 8765 were verified closed. Saved evidence is in `outputs/kiosk_single_session_20260910`; do not restart the camera automatically.
-- This checkpoint preserves the photographed person and pasted prop while Juggernaut generates the background from a neutral canvas. It does not regenerate an integrated portrait. Remaining visual issues include upper-body crop placement, lighting mismatch, and the rectangular prop overlay. Integrated portrait generation is future work, not part of this checkpoint.
+- This historical checkpoint preserved the photographed person and used a neutral canvas. The current path uses destination thumbnail references, scene-aware placement, and final subject restoration; synthetic prop insertion has been removed.
 - The standalone tensor tracer, including its offline fix, is preserved in Git stash `f08e8302accb77d94ce0386c2a6748037adb7934`, named `diagnostics: offline inpainting stage probe`. Only `scripts/probe_inpaint_stages.py` was stashed; other work and output evidence were left intact.
 - Restore the probe when needed with `git stash apply f08e8302accb77d94ce0386c2a6748037adb7934`. This retains the stash. Use a fresh output directory for new traces. The stash is local only and is not included in a normal commit or push.
 - Tensor tracing scans inputs/outputs and flushes JSON per component call, so it adds unmeasured diagnostic overhead. It was never wired into the kiosk. Production timing records and non-finite/black-frame safety checks remain enabled.
@@ -134,7 +134,7 @@ This section supersedes the historical pre-reboot instructions below.
 - Installed OpenVINO: 2026.3.1. GPU: Intel Arc B390 integrated graphics; CPU: Intel Core Ultra X7 358H; Intel AI Boost NPU.
 - Intended discrete Arc B70 deployment has not been measured.
 - Default placement remains YOLO on NPU, RMBG on GPU, Juggernaut on GPU. CPU RMBG was a diagnostic control, not an established complete fix.
-- Juggernaut: cached `OpenVINO/Juggernaut-XL-v9-fp16-ov`; production inpainting uses 1080x1350 (aligned internally to 1080x1344), 30 steps, CFG 5, strength 0.99.
+- Current generation engines: DreamShaper INT8 at 512x768 or local Juggernaut INT8 at 896x1120; production uses scene references and preserves the captured subject without synthetic prop insertion.
 - Cache: `outputs/openvino_cache/juggernaut`. Do not delete it or change precision/device settings as part of an otherwise controlled comparison without recording the change.
 
 ## Implemented Work (Uncommitted)
@@ -213,7 +213,7 @@ Record the installed driver version and confirm the reboot first. Rerun the stag
 - If a tensor becomes non-finite, locate its first boundary and distinguish finite-input/non-finite-output from invalid upstream input. Do not assume VAE decoder overflow or OOM.
 - The current probe segments the composition before each render; it is not a replacement for the earlier fresh-photo before/after segmentation control. Repeat that control when evaluating GPU RMBG reliability.
 - Repeated successful renders plus finite segmentation are necessary before broader live acceptance. They are not by themselves proof of event readiness.
-- Later acceptance must include real camera flow, visual inspection/person protection, repeated guests, delivery/phone LAN access, recovery, and timing. A real photograph previously showed imperfect prop placement/background-person handling; visual quality is not certified.
+- Later acceptance must include real camera flow, visual inspection/person protection, repeated guests, delivery/phone LAN access, recovery, and timing. Visual quality is not certified.
 
 ## Validation Status and Remaining Work
 
