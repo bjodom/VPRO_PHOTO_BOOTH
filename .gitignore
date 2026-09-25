@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.env
 
 # Generated renders, logs, and OpenVINO compilation caches
 outputs/

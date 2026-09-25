@@ -181,7 +181,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--delivery-channel",
         default="local-qr",
-        choices=["local-qr", "twilio", "none"],
+        choices=["local-qr", "s3-qr", "twilio", "none"],
         help="Delivery channel used to hand the finished image to the guest.",
     )
     parser.add_argument(
@@ -251,7 +251,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--compose-output-image",
         type=Path,
-        default=Path("outputs/final_portrait_1080x1350.jpg"),
+        default=Path("outputs/final_portrait_512x512.jpg"),
         help="Final portrait output image path.",
     )
     parser.add_argument(
@@ -262,7 +262,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--final-output-image",
         type=Path,
-        default=Path("outputs/final_portrait_1080x1350_final.jpg"),
+        default=Path("outputs/final_portrait_512x512_final.jpg"),
         help="Final deliverable output path for one-shot social pipeline mode.",
     )
     parser.add_argument(
@@ -1201,14 +1201,17 @@ def _run_delivery_test(args) -> None:
         print(f"url:     {result.url}")
         if result.expires_in_seconds:
             print(f"expires: {result.expires_in_seconds / 60:.0f} min")
-        if result.url and args.delivery_channel == "local-qr":
+        if result.url and args.delivery_channel in ("local-qr", "s3-qr"):
             print(render_qr_terminal(result.url))
-            print(
-                "Scan with a phone camera. If nothing loads, the phone likely cannot reach this\n"
-                "machine: guest WiFi often blocks device-to-device traffic (client isolation).\n"
-                "Try a phone on the same network first, then a hotspot.\n"
-                "Ctrl+C to stop."
-            )
+            if args.delivery_channel == "local-qr":
+                print(
+                    "Scan with a phone camera. If nothing loads, the phone likely cannot reach this\n"
+                    "machine: guest WiFi often blocks device-to-device traffic (client isolation).\n"
+                    "Try a phone on the same network first, then a hotspot.\n"
+                    "Ctrl+C to stop."
+                )
+            else:
+                print("Scan with a phone camera. The signed download URL will expire automatically.")
         try:
             while True:
                 sleep(1)

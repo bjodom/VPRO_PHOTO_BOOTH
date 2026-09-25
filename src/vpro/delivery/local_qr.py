@@ -9,8 +9,8 @@ which blocks that; test the actual network before relying on this channel.
 
 from __future__ import annotations
 
-import html
 from pathlib import Path
+from xml.etree import ElementTree
 
 from .base import DeliveryRequest, DeliveryResult
 from .handoff import HandoffServer, ImageHandoffStore
@@ -54,7 +54,7 @@ class LocalQrDelivery:
             self.server.stop()
 
 
-def render_qr_svg(data: str, scale: int = 8, border: int = 2) -> str:
+def render_qr_svg(data: str, scale: int = 8, border: int = 4) -> str:
     """Inline SVG so the kiosk page needs no image round-trip."""
     import io
 
@@ -64,8 +64,12 @@ def render_qr_svg(data: str, scale: int = 8, border: int = 2) -> str:
     segno.make(data, error="m").save(
         buffer, kind="svg", scale=scale, border=border, xmldecl=False, svgns=True
     )
-    svg = buffer.getvalue().decode("utf-8")
-    return svg.replace("<svg ", f"<svg data-url=\"{html.escape(data, quote=True)}\" ", 1)
+    ElementTree.register_namespace("", "http://www.w3.org/2000/svg")
+    root = ElementTree.fromstring(buffer.getvalue())
+    root.set("viewBox", f"0 0 {root.attrib['width']} {root.attrib['height']}")
+    root.set("preserveAspectRatio", "xMidYMid meet")
+    root.set("data-url", data)
+    return ElementTree.tostring(root, encoding="unicode")
 
 
 def render_qr_terminal(data: str, compact: bool = True) -> str:

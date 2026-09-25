@@ -20,7 +20,7 @@ from .portrait_compositor import (
 )
 from .rmbg_runtime import load_rmbg_runtime
 
-OUTPUT_SIZE = (1080, 1350)
+OUTPUT_SIZE = (512, 512)
 
 
 def compose_portrait_from_image(

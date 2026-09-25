@@ -10,6 +10,9 @@ and real delivery. Start the kiosk first, then run this against it.
 
 Add --runs 2 to check that a second guest is faster than the first, which is the whole point of
 keeping the pipeline resident.
+
+For object-store acceptance, start the kiosk with --delivery-channel s3-qr and the VPRO_S3_*
+environment variables configured, then pass --expect-object-store to verify the returned URL.
 """
 
 from __future__ import annotations
@@ -32,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs", type=int, default=5, help="Number of guest sessions to simulate.")
     parser.add_argument("--p95-budget", type=float, default=60.0, help="Warm accept-to-QR p95 budget in seconds.")
     parser.add_argument("--timeout", type=float, default=240.0, help="Seconds to wait per render.")
+    parser.add_argument(
+        "--expect-object-store",
+        action="store_true",
+        help="Download the returned object-store URL directly instead of using the local handoff route.",
+    )
     return parser
 
 
@@ -114,11 +122,19 @@ def main(argv: list[str] | None = None) -> int:
             if not state["qr_svg"]:
                 failures += 1
             try:
-                with urllib.request.urlopen(state["delivery_url"], timeout=15) as response:
-                    if response.status != 200:
-                        raise RuntimeError("Handoff page failed")
-                image_url = state["delivery_url"].replace("/i/", "/f/", 1)
+                delivery_url = state["delivery_url"]
+                if args.expect_object_store:
+                    if "/i/" in delivery_url:
+                        raise RuntimeError("Expected an object-store URL, got the local handoff URL")
+                    image_url = delivery_url
+                else:
+                    with urllib.request.urlopen(delivery_url, timeout=15) as response:
+                        if response.status != 200:
+                            raise RuntimeError("Handoff page failed")
+                    image_url = delivery_url.replace("/i/", "/f/", 1)
                 with urllib.request.urlopen(image_url, timeout=15) as response:
+                    if response.status != 200:
+                        raise RuntimeError("Image download failed")
                     image = response.read()
                 if not image.startswith(b"\xff\xd8") or len(image) < 1000:
                     raise RuntimeError("Downloaded file is not a complete JPEG")

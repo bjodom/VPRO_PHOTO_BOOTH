@@ -375,7 +375,7 @@ class KioskService:
         if self.camera is None:
             self.session.camera_failed("camera is not running")
             return
-        frame = self.camera.latest_frame(max_age=1.0)
+        frame = self.camera.latest_capture_frame(max_age=1.0)
         if frame is None:
             self.session.camera_failed("no frame available from the camera")
             return

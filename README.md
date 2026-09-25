@@ -2,23 +2,30 @@
 
 ## Run It This Way
 
-```powershell
-# One-time setup: sync the .venv dependencies.
-# Add -UseIntelProxy on the Intel network when required.
-.\run.ps1 -Sync -CameraIndex 2 -CaptureRotate 90
+Run the first command once after setup. It synchronizes the project dependencies and starts the
+kiosk. Add `-UseIntelProxy` when the Intel network requires the proxy:
 
-# Daily event launch using external camera ID 2, rotated for portrait orientation.
-# The camera likes to change index ids, if it's the laptop camera try 1 or 0
+```powershell
+.\run.ps1 -Sync -CameraIndex 2 -CaptureRotate 90
+```
+
+After that, every subsequent booth launch uses the short command below. Camera index `0`, `1`, or
+`2` may vary by machine:
+
+```powershell
 .\run.ps1 -CameraIndex 2 -CaptureRotate 90
 ```
 
-DreamShaper is the production event engine:
+The defaults already select DreamShaper, S3 QR delivery, square `512x512` output, and the settings
+from `.env`. No additional engine or delivery flags are required for normal operation.
+
+DreamShaper is the default production event engine:
 
 ```powershell
-.\run.ps1 -GenerationEngine DreamShaper -CameraIndex 2 -CaptureRotate 90
+.\run.ps1 -DeliveryChannel s3-qr -CameraIndex 2 -CaptureRotate 90
 ```
 
-DreamShaper uses native `512x768` generation with CFG 7 by default and is delivered directly
+DreamShaper uses native `512x512` generation with CFG 7 by default and is delivered directly
 with no upscaling. Juggernaut remains available only as a diagnostic/experimental path because
 it has shown intermittent black/non-finite inpainting failures on the event hardware.
 
@@ -57,6 +64,26 @@ Useful launcher options:
 # Verify emitted arguments without starting camera or models.
 .\run.ps1 -DryRun
 ```
+
+### Temporary S3 Photo Delivery
+
+The kiosk can upload each finished image to a private S3-compatible bucket and show the guest a
+QR code containing a short-lived presigned download URL. No phone number or messaging provider is
+required. Install the optional client and configure the object store before launch:
+
+```powershell
+uv sync --extra delivery --extra gen --extra kiosk
+$env:VPRO_S3_BUCKET = "vpro-photo-delivery"
+$env:VPRO_S3_ENDPOINT_URL = "https://atl2.vultrobjects.com"
+$env:VPRO_S3_REGION = "us-east-1"
+$env:VPRO_S3_URL_TTL_SECONDS = "900"
+.\run.ps1 -DeliveryChannel s3-qr -CameraIndex 2 -CaptureRotate 90
+```
+
+Use the provider's standard `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables
+for credentials. The `bucket_location = US` value from the provider's `s3cmd` configuration maps to
+`us-east-1` for the S3 client. The bucket should remain private; the application removes the need
+for a permanent public image URL by signing each download for 15 minutes.
 
 Run `.\run.ps1 -?` to see all launcher parameters. The lower-level `uv run vpro` commands below
 remain available for individual smoke tests and development workflows; prefer `uv run --no-sync`
@@ -226,8 +253,8 @@ Notes:
 - `--compose-scene-image` must point to a portrait background image.
 
 Useful outputs:
-- deterministic compose: `--compose-output-image` (default `outputs/final_portrait_1080x1350.jpg`)
-- final deliverable: `--final-output-image` (default `outputs/final_portrait_1080x1350_final.jpg`)
+- deterministic compose: `--compose-output-image` (default `outputs/final_portrait_512x512.jpg`)
+- final deliverable: `--final-output-image` (default `outputs/final_portrait_512x512_final.jpg`)
 - guided render artifact: `--juggernaut-guided-output` (default `outputs/juggernaut_guided.jpg`)
 
 The command prints stage timings for capture, RMBG, compose, Juggernaut, and total runtime.
