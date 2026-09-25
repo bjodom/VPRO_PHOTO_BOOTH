@@ -243,12 +243,6 @@ function applyStateAssets(snapshot) {
   if (snapshot.state === "ready") {
     document.getElementById("final-img").src = `/api/final.jpg?t=${Date.now()}`;
     document.getElementById("qr").innerHTML = snapshot.qr_svg || "";
-    const qrUrl = document.querySelector("#qr svg")?.dataset?.url;
-    document.getElementById("ready-url").textContent = qrUrl || snapshot.delivery_url || "";
-    const caption = document.getElementById("caption");
-    caption.textContent = snapshot.caption || "";
-    caption.hidden = true;
-    document.getElementById("caption-btn").textContent = "Show caption";
   }
 
   if (snapshot.state === "consent") {
@@ -294,14 +288,6 @@ document.getElementById("custom-location-form").addEventListener("submit", event
   act("choose_scene", { scene: "custom", custom_location: document.getElementById("custom-location").value });
 });
 document.getElementById("cancel-countdown").addEventListener("click", () => cancelCountdown({ suppressAuto: true }));
-
-document.getElementById("caption-btn").addEventListener("click", () => {
-  const caption = document.getElementById("caption");
-  caption.hidden = !caption.hidden;
-  document.getElementById("caption-btn").textContent = caption.hidden
-    ? "Show caption"
-    : "Hide caption";
-});
 
 let staffTimer = null;
 const openStaff = () => { document.getElementById("staff-panel").hidden = false; document.getElementById("staff-close").focus(); };

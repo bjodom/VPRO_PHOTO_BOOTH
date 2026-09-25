@@ -9,13 +9,11 @@
     -DownloadModel.
 
 .EXAMPLE
-    .\run.ps1
+    .\run.ps1 -CameraIndex 0 -CaptureRotate 90
 
 .EXAMPLE
     .\run.ps1 -UseIntelProxy -Sync -DownloadModel -CaptureAutoStart
 
-.EXAMPLE
-    .\run.ps1 -Device intel:gpu -RmbgDevice GPU -JuggernautPreset identity-lock
 #>
 
 [CmdletBinding()]
@@ -45,8 +43,8 @@ param(
     [double]$CaptureWristStableSeconds = 0.7,
     [string]$SceneImage = "assets/scenes/portrait_scene_1080x1350.jpg",
     [string]$RmbgModelDir = "models/rmbg/rmbg-1.4",
-    [string]$ComposeOutputImage = "outputs/final_portrait_1080x1350.jpg",
-    [string]$FinalOutputImage = "outputs/final_portrait_1080x1350_final.jpg",
+    [string]$ComposeOutputImage = "outputs/final_portrait_512x512.jpg",
+    [string]$FinalOutputImage = "outputs/final_portrait_512x512_final.jpg",
     [string]$JuggernautGuidedOutput = "outputs/generation_guided.jpg",
     [int]$GenerationSteps = 0,
     [double]$GenerationGuidanceScale = 0,
@@ -71,6 +69,8 @@ param(
     [ValidateRange(1, 65535)]
     [int]$KioskPort = 8000,
     [string]$OutputDir = "outputs/kiosk",
+    [ValidateSet("local-qr", "s3-qr", "twilio", "none")]
+    [string]$DeliveryChannel = "s3-qr",
     [string]$DeliveryAdvertiseHost,
     [ValidateRange(0.25, 168)]
     [double]$RetentionHours = 24
@@ -81,6 +81,26 @@ $ErrorActionPreference = "Stop"
 Push-Location -LiteralPath $PSScriptRoot
 try {
 
+$DotEnvPath = Join-Path $PSScriptRoot ".env"
+if (Test-Path -LiteralPath $DotEnvPath) {
+    foreach ($Line in Get-Content -LiteralPath $DotEnvPath) {
+        $TrimmedLine = $Line.Trim()
+        if (-not $TrimmedLine -or $TrimmedLine.StartsWith("#")) {
+            continue
+        }
+        if ($TrimmedLine -notmatch '^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+            throw "Invalid .env entry: $TrimmedLine"
+        }
+        $Name = $Matches[1]
+        $Value = $Matches[2].Trim()
+        if (($Value.StartsWith('"') -and $Value.EndsWith('"')) -or
+            ($Value.StartsWith("'") -and $Value.EndsWith("'"))) {
+            $Value = $Value.Substring(1, $Value.Length - 2)
+        }
+        Set-Item -Path "Env:$Name" -Value $Value
+    }
+}
+
 if (-not $JuggernautModelId) {
     $JuggernautModelId = if ($GenerationEngine -eq "Juggernaut") {
         "models/juggernaut-int8"
@@ -89,7 +109,7 @@ if (-not $JuggernautModelId) {
     }
 }
 $GenerationWidth = if ($GenerationEngine -eq "Juggernaut") { 896 } else { 512 }
-$GenerationHeight = if ($GenerationEngine -eq "Juggernaut") { 1120 } else { 768 }
+$GenerationHeight = if ($GenerationEngine -eq "Juggernaut") { 1120 } else { 512 }
 
 function Assert-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -131,7 +151,7 @@ if ($UseIntelProxy) {
 if ($Sync) {
     Assert-Command "uv"
     Write-Host "Syncing project dependencies..." -ForegroundColor Cyan
-    & uv sync --extra gen --extra kiosk
+    & uv sync --extra gen --extra kiosk --extra delivery
     if ($LASTEXITCODE -ne 0) {
         throw "uv sync failed with exit code $LASTEXITCODE"
     }
@@ -180,7 +200,7 @@ $Arguments = @(
 if ($Mode -eq "kiosk") {
     $Arguments += @("--kiosk", "--kiosk-pose-fps", $PoseFps,
         "--kiosk-port", $KioskPort, "--kiosk-output-retention-hours", $RetentionHours,
-        "--kiosk-output-dir", $OutputDir, "--open-browser")
+        "--kiosk-output-dir", $OutputDir, "--delivery-channel", $DeliveryChannel, "--open-browser")
     if ($DeliveryAdvertiseHost) {
         $Arguments += @("--delivery-advertise-host", $DeliveryAdvertiseHost)
     }

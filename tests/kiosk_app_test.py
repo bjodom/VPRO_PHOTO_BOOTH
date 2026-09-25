@@ -94,6 +94,9 @@ def test_index_and_static(tmp: Path) -> None:
     response = client.get("/")
     check("index serves html", response.status_code == 200 and "<html" in response.text.lower())
     check("index has all screens", response.text.count('class="screen') >= 11, response.text.count('class="screen'))
+    check("ready screen has no caption toggle", "caption-btn" not in response.text)
+    check("registered Intel vPro mark is present", "Intel vPro®" in response.text)
+    check("kiosk assets use current cache version", response.text.count("?v=event-8") == 2)
     # "your phone" appears in the QR copy; what must not exist is a field asking for a number.
     check("no phone number input", 'type="tel"' not in response.text)
     check("no consent text about text messages", "text message" not in response.text.lower())
@@ -238,6 +241,18 @@ def test_camera_latest_frame_is_a_copy() -> None:
     check("caller cannot mutate the buffer", frame[0, 0, 0] == 1)
 
 
+def test_camera_capture_frame_matches_mirrored_preview() -> None:
+    camera = CameraStream(index=999)
+    frame = np.zeros((2, 3, 3), dtype=np.uint8)
+    frame[0, 0, 0] = 10
+    frame[0, 2, 0] = 20
+    camera._frame = frame
+
+    captured = camera.latest_capture_frame()
+    check("capture frame mirrors preview orientation", captured[0, 0, 0] == 20 and captured[0, 2, 0] == 10)
+    check("capture mirror does not mutate camera frame", frame[0, 0, 0] == 10 and frame[0, 2, 0] == 20)
+
+
 def test_session_timeout_visible_over_http(tmp: Path) -> None:
     client, service = client_for(tmp)
     client.post("/api/action/start")
@@ -295,7 +310,12 @@ def main() -> int:
         ):
             print(f"\n{test.__name__}")
             test(tmp)
-        for test in (test_camera_stream_without_device, test_camera_latest_frame_is_a_copy, test_camera_rotation):
+        for test in (
+            test_camera_stream_without_device,
+            test_camera_latest_frame_is_a_copy,
+            test_camera_capture_frame_matches_mirrored_preview,
+            test_camera_rotation,
+        ):
             print(f"\n{test.__name__}")
             test()
 

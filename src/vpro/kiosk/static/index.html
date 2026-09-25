@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>vPRO Travel Photo Experience</title>
-<link rel="stylesheet" href="/static/styles.css?v=event-4">
+<title>Intel vPro® Travel Photo Experience</title>
+<link rel="stylesheet" href="/static/styles.css?v=event-8">
 </head>
 <body>
 <div id="app">
   <header class="bar">
-    <button class="brand" id="staff" type="button" title="Hold for staff controls" aria-label="Intel vPro; hold for staff controls">Intel <strong>vPro</strong></button>
+    <button class="brand" id="staff" type="button" title="Hold for staff controls" aria-label="Intel vPro registered trademark; hold for staff controls">Intel <strong>vPro<span class="registered" aria-hidden="true">®</span></strong></button>
     <span class="spacer"></span>
     <span id="timer" class="timer"></span>
     <span class="event-name">Travel Photo Experience</span>
@@ -22,7 +22,7 @@
     <section class="screen" data-state="idle">
       <img class="destination-backdrop" src="/static/fuji.jpg" alt="Mount Fuji destination" fetchpriority="high">
       <div class="attract-copy">
-        <p class="eyebrow">Intel vPro</p>
+        <p class="eyebrow">Intel vPro®</p>
         <h1>Your travel portrait</h1>
         <p class="lede">A new destination. A photo that's yours.</p>
         <button class="primary xl" data-action="start">Start Your Photo Experience</button>
@@ -103,12 +103,8 @@
         <div class="preview"><img id="final-img" alt="Your generated photo"></div>
         <div class="handoff">
           <div id="qr" class="qr"></div>
-          <p class="lede">Your portrait, to go.</p>
-          <p>Scan on the event Wi-Fi.</p>
-          <p class="muted">Link expires in 15 minutes. Can't connect? Ask staff.</p>
-          <p class="muted" id="ready-url"></p>
-          <button class="ghost" id="caption-btn" type="button">Show caption</button>
-          <pre id="caption" class="caption" hidden></pre>
+          <p class="lede">Download Your Portrait</p>
+          <p class="muted">Link expires in 15 minutes.</p>
         </div>
       </div>
       <button class="primary" data-action="finish">I'm Done</button>
@@ -116,7 +112,7 @@
 
     <section class="screen" data-state="done">
       <h2>All set!</h2>
-      <p class="lede">Thanks for trying the Intel vPro experience.</p>
+      <p class="lede">Thanks for trying the Intel vPro® experience.</p>
       <button class="primary" data-action="reset">Start Another</button>
     </section>
 
@@ -163,6 +159,6 @@
     <button class="ghost" id="staff-close" type="button">Close</button>
   </aside>
 </div>
-<script src="/static/app.js?v=event-4"></script>
+<script src="/static/app.js?v=event-8"></script>
 </body>
 </html>

@@ -148,15 +148,20 @@ class CameraStream:
     # -- readers -------------------------------------------------------------------
 
     def latest_frame(self, max_age: float | None = None) -> np.ndarray | None:
-        """Most recent raw BGR frame, copied so callers cannot mutate the buffer.
-
-        Deliberately unmirrored: the preview is flipped so guests can adjust naturally, but the
-        delivered photo should not be, or any text on their clothing comes out reversed.
-        """
+        """Most recent raw BGR frame, copied so callers cannot mutate the buffer."""
         with self._lock:
             if max_age is not None and perf_counter() - self._frame_time > max_age:
                 return None
             return None if self._frame is None else self._frame.copy()
+
+    def latest_capture_frame(self, max_age: float | None = None) -> np.ndarray | None:
+        """Most recent frame with the same horizontal orientation shown in the preview."""
+        frame = self.latest_frame(max_age=max_age)
+        if frame is None or not self.mirror_preview:
+            return frame
+        import cv2
+
+        return cv2.flip(frame, 1)
 
     def latest_jpeg(self) -> bytes | None:
         with self._lock:

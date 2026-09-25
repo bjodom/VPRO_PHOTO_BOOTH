@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import urllib.error
 import urllib.request
+from xml.etree import ElementTree
 from pathlib import Path
 from time import sleep
 
@@ -21,6 +22,7 @@ from vpro.delivery import (  # noqa: E402
     HandoffServer,
     ImageHandoffStore,
     LocalQrDelivery,
+    S3QrDelivery,
     TwilioDelivery,
     build_delivery,
     render_qr_svg,
@@ -150,6 +152,40 @@ def test_twilio_stub_is_honest() -> None:
     check("twilio explains why", "not implemented" in (result.error or "").lower())
 
 
+def test_s3_qr_channel(tmp: Path) -> None:
+    image = sample_image(tmp)
+
+    class FakeS3:
+        def __init__(self) -> None:
+            self.uploads: list[tuple[str, str, str, dict[str, str]]] = []
+
+        def upload_file(self, filename, bucket, key, ExtraArgs):  # type: ignore[no-untyped-def]
+            self.uploads.append((filename, bucket, key, ExtraArgs))
+
+        def generate_presigned_url(self, operation, Params, ExpiresIn):  # type: ignore[no-untyped-def]
+            return f"https://objects.example/{Params['Key']}?expires={ExpiresIn}&signature=test-signature"
+
+    client = FakeS3()
+    channel = S3QrDelivery(
+        client=client,
+        bucket="vpro-photo-delivery",
+        url_ttl_seconds=900,
+        key_prefix="sessions",
+    )
+    result = channel.deliver(DeliveryRequest(image_path=image, caption="Posted from #vPRO"))
+    check("s3 delivery succeeds", result.ok, str(result.error))
+    check("s3 returns signed url", (result.url or "").startswith("https://objects.example/"))
+    check("s3 returns inline svg qr", "<svg" in (result.qr_svg or ""))
+    qr_svg = ElementTree.fromstring(result.qr_svg or "")
+    check("s3 qr target matches the complete signed url", qr_svg.attrib.get("data-url") == result.url)
+    check("s3 reports url expiry", result.expires_in_seconds == 900)
+    check("s3 uploads to configured bucket", client.uploads[0][1] == "vpro-photo-delivery")
+    check("s3 uses image content type", client.uploads[0][3]["ContentType"] == "image/jpeg")
+
+    missing = channel.deliver(DeliveryRequest(image_path=tmp / "gone.jpg"))
+    check("s3 missing image reports failure", not missing.ok)
+
+
 def test_factory(tmp: Path) -> None:
     none_channel = build_delivery("none")
     result = none_channel.deliver(DeliveryRequest(image_path=tmp / "any.jpg"))
@@ -164,11 +200,28 @@ def test_factory(tmp: Path) -> None:
 
 
 def test_qr_encodes_url() -> None:
+    import segno
+
     url = "http://192.168.1.50:8765/i/abc"
     svg = render_qr_svg(url)
     check("qr renders svg", svg.startswith("<svg") or "<svg" in svg)
     check("qr carries visible url metadata", f'data-url="{url}"' in svg)
+    svg_root = ElementTree.fromstring(svg)
+    matrix_size = len(segno.make(url, error="m").matrix)
+    svg_modules = float(svg_root.attrib["width"]) / 8
+    check("qr has a four-module quiet zone", svg_modules - matrix_size == 8)
     check("qr is non-trivial", len(svg) > 500, str(len(svg)))
+
+    signed_url = "https://objects.example/photo.jpg?" + "&".join(
+        f"X-Amz-Param-{index}={'a' * 32}" for index in range(12)
+    ) + "&X-Amz-Signature=" + "b" * 64
+    signed_svg = ElementTree.fromstring(render_qr_svg(signed_url))
+    check("long signed url is retained as QR target", signed_svg.attrib.get("data-url") == signed_url)
+    check(
+        "long QR includes its complete matrix viewport",
+        signed_svg.attrib.get("viewBox")
+        == f"0 0 {signed_svg.attrib['width']} {signed_svg.attrib['height']}",
+    )
 
 
 def main() -> int:
@@ -182,6 +235,7 @@ def main() -> int:
             test_http_serves_only_known_tokens,
             test_page_view_does_not_consume_downloads,
             test_local_qr_channel,
+            test_s3_qr_channel,
             test_factory,
         ):
             print(f"\n{test.__name__}")
