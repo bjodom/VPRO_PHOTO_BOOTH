@@ -9,13 +9,11 @@
     -DownloadModel.
 
 .EXAMPLE
-    .\run.ps1
+    .\run.ps1 -CameraIndex 0 -CaptureRotate 90
 
 .EXAMPLE
     .\run.ps1 -UseIntelProxy -Sync -DownloadModel -CaptureAutoStart
 
-.EXAMPLE
-    .\run.ps1 -Device intel:gpu -RmbgDevice GPU -JuggernautPreset identity-lock
 #>
 
 [CmdletBinding()]
