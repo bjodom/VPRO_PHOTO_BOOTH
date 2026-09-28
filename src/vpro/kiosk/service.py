@@ -22,6 +22,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..delivery import DeliveryRequest, build_delivery
+from ..vision.portrait_compositor import apply_final_overlay
 from ..vision.juggernaut_types import RenderRequest
 from .camera import CameraStream
 from .scenes import SCENES, get_scene
@@ -60,6 +61,7 @@ class KioskConfig:
     mask_quality: str = "high"
 
     scene_image: Path = Path("assets/scenes/portrait_scene_1080x1350.jpg")
+    final_overlay: Path = Path("assets/Nexthink 2026 (BR0230483)_Booth_overlay.png")
 
     # Juggernaut engine uses the local models/juggernaut-int8 export.
     juggernaut_model_id: str = "OpenVINO/dreamshaper-8-inpainting-int8-ov"
@@ -578,6 +580,8 @@ class KioskService:
         if self._abandoned(session_id):
             return None, None
 
+        final_path = self._apply_final_overlay(final_path)
+
         with self._lock:
             if self._abandoned(session_id):
                 return None, None
@@ -589,6 +593,20 @@ class KioskService:
         if delivery and delivery.ok:
             self._render_samples = (self._render_samples + [timings["total_seconds"]])[-20:]
         return final_path, delivery
+
+    def _apply_final_overlay(self, image_path: Path) -> Path:
+        import cv2
+
+        try:
+            image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+            if image is None:
+                raise RuntimeError(f"Could not read final image for overlay: {image_path}")
+            overlaid = apply_final_overlay(image, self.config.final_overlay)
+            if not cv2.imwrite(str(image_path), overlaid):
+                raise RuntimeError(f"Could not write final image with overlay: {image_path}")
+        except Exception as exc:
+            print(f"[kiosk] final overlay skipped: {exc}", flush=True)
+        return image_path
 
     def _record_metrics(self, success: bool) -> None:
         record = {"time": datetime.now().isoformat(), "success": success,

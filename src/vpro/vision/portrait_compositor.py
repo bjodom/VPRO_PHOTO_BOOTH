@@ -332,3 +332,15 @@ def save_composed_image(image_bgr: np.ndarray, output_path: Path) -> Path:
     if not cv2.imwrite(str(output_path), image_bgr):
         raise RuntimeError(f"Could not write composed image to {output_path}")
     return output_path
+
+
+def apply_final_overlay(image_bgr: np.ndarray, overlay_path: Path) -> np.ndarray:
+    """Apply a transparent full-canvas frame without changing the image dimensions."""
+    overlay = cv2.imread(str(overlay_path.expanduser().resolve()), cv2.IMREAD_UNCHANGED)
+    if overlay is None:
+        raise RuntimeError(f"Could not read final overlay image: {overlay_path}")
+    if overlay.ndim != 3 or overlay.shape[2] != 4:
+        raise RuntimeError(f"Final overlay must be a transparent PNG with four channels: {overlay_path}")
+    if overlay.shape[:2] != image_bgr.shape[:2]:
+        overlay = cv2.resize(overlay, (image_bgr.shape[1], image_bgr.shape[0]), interpolation=cv2.INTER_AREA)
+    return _overlay_bgra(image_bgr, overlay, 0, 0)

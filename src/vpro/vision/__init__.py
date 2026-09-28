@@ -11,6 +11,7 @@ from .rmbg_runtime import (
     validate_rmbg_assets,
 )
 from .portrait_compositor import (
+    apply_final_overlay,
     CompositionResult,
     SubjectSelection,
     compose_portrait,
@@ -22,6 +23,7 @@ from .portrait_compositor import (
 __all__ = [
     "RMBGRuntime",
     "CompositionResult",
+    "apply_final_overlay",
     "SubjectSelection",
     "compose_portrait",
     "cleanup_mask_for_primary_subject",

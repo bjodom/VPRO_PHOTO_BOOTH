@@ -8,6 +8,7 @@ import numpy as np
 
 from .backends.factory import build_backend
 from .vision import (
+    apply_final_overlay,
     SubjectSelection,
     compose_portrait,
     cleanup_mask_for_primary_subject,
@@ -264,6 +265,12 @@ def build_parser() -> ArgumentParser:
         type=Path,
         default=Path("outputs/final_portrait_512x512_final.jpg"),
         help="Final deliverable output path for one-shot social pipeline mode.",
+    )
+    parser.add_argument(
+        "--final-overlay-image",
+        type=Path,
+        default=Path("assets/Nexthink 2026 (BR0230483)_Booth_overlay.png"),
+        help="Transparent PNG applied to the final deliverable after rendering.",
     )
     parser.add_argument(
         "--test-juggernaut",
@@ -999,6 +1006,18 @@ def _run_social_pipeline(args) -> None:
 
     if runner is not None:
         runner.shutdown()
+
+    import cv2
+    try:
+        final_image = cv2.imread(str(final_output), cv2.IMREAD_COLOR)
+        if final_image is None:
+            raise RuntimeError(f"Could not read final output for overlay: {final_output}")
+        overlaid = apply_final_overlay(final_image, args.final_overlay_image)
+        if not cv2.imwrite(str(final_output), overlaid):
+            raise RuntimeError(f"Could not write final output with overlay: {final_output}")
+        print(f"Final overlay applied: {args.final_overlay_image}")
+    except Exception as exc:
+        print(f"Final overlay skipped: {exc}")
 
     total_sec = perf_counter() - t_total
     print(
